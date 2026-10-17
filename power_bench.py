@@ -36,7 +36,7 @@ def main():
             sentences = json.load(f)
 
         log(f"\n===== 基准: {args.device} | 时长 {args.seconds}s | 句数 {len(sentences)} =====")
-        compiled, tok = load_static_multi(os.path.join(ROOT, "models", "opus-mt-zh-en-ov"), args.device)
+        compiled, tok = load_static_multi(os.path.join(ROOT, "models", "opus-mt-zh-en"), args.device)
         tiers_used = {}
 
         # 预热（NPU 首次推理含驱动/JIT 开销，不计入）
@@ -79,3 +79,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

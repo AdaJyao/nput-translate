@@ -755,6 +755,7 @@ class App(ctk.CTk):
                 return
 
         self._dl_stop = False
+        self._last_dl_dir = target
         self.btn_download.configure(state="disabled", text="下载中…")
         self.lbl_dl.configure(text="连接中…", text_color="#8a8a8a")
         self.pbar.set(0)
@@ -780,6 +781,14 @@ class App(ctk.CTk):
         if ok:
             self.pbar.set(1.0)
         self._refresh_models()
+        if ok:
+            # 首次安装（当前没有可用模型）自动设为当前，省去用户再点一次
+            try:
+                items = self._mm.list_installed()
+                if items and not any(it["active"] for it in items):
+                    self._activate_model(getattr(self, "_last_dl_dir", items[0]["path"]))
+            except Exception:
+                pass
 
     # ------------------------------------------------------------ 插件页
     def _build_plugin(self, f):

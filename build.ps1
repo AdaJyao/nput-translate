@@ -188,7 +188,7 @@ $readme = @'
 
 下载得到的是 OpenVINO IR（FP16），解压后放在本目录下，例如：
 
-    models\opus-mt-zh-en-ov\
+    models\opus-mt-zh-en\
         openvino_encoder_model.xml/.bin
         openvino_decoder_model.xml/.bin
         source.spm, target.spm, vocab.json, config.json
@@ -235,7 +235,7 @@ $defaults = [ordered]@{
     host              = '127.0.0.1'
     port              = 8715
     http_port         = 8716
-    model_dir         = 'models\opus-mt-zh-en-ov'
+    model_dir         = 'models\opus-mt-zh-en'
     enc_seq           = 64
     dec_seq           = 64
     max_new_tokens    = 96
@@ -252,7 +252,7 @@ foreach ($k in $defaults.Keys) {
     }
 }
 # model_dir 强制相对路径：跟着程序目录走，换机器也不怕
-$cfg.model_dir = 'models\opus-mt-zh-en-ov'
+$cfg.model_dir = 'models\opus-mt-zh-en'
 ($cfg | ConvertTo-Json -Depth 6) | Set-Content $cfgPath -Encoding utf8
 Write-Host "  已写入 config.json"
 
@@ -335,3 +335,4 @@ if (Test-Path $Out) {
     Get-ChildItem $Out -File | Select-Object Name, @{n = 'MB'; e = { [math]::Round($_.Length / 1MB, 1) } } |
         Format-Table -AutoSize | Out-String | Write-Host
 }
+

@@ -29,36 +29,33 @@ import nput_core as core
 APP_DIR = core.APP_DIR
 MODELS_DIR = os.path.join(APP_DIR, "models")
 
-# 内置可下载模型清单。
-# 安装包不再内置模型（否则体积翻倍），改为首次使用时从这里下载现成的 OpenVINO IR 包。
-# url 指向 GitHub Release 上的附件（公开仓库，无需登录）。
-# 同一模型的不同精度作为独立条目，装到不同目录，可随时切换对比。
+# 内置可下载模型清单（这就是「下载源」）。
+# 安装包不内置任何模型，只内置这份清单；模型在程序「模型」页下载后安装。
+# 显示名一律用**原始精简模型名**（如 opus-mt-zh-en），不带 -ov / 中文说明等后缀。
 _RELEASE_BASE = "https://github.com/AdaJyao/nput-translate/releases/download/v1.2.0"
 
 MANIFEST = [
     {
         "id": "opus-mt-zh-en",
-        "dir": "opus-mt-zh-en-ov",
-        "label": "中 → 英（opus-mt-zh-en）",
-        "model": "中 → 英 · opus-mt-zh-en",
+        "dir": "opus-mt-zh-en",
+        "label": "opus-mt-zh-en",
+        "model": "opus-mt-zh-en",
         "precision": "FP16",
         "precision_desc": "推荐：体积减半，NPU 原生按 FP16 计算，译文与 FP32 一致",
         "src": "zh", "dst": "en",
-        "note": "推荐，FP16 约 212 MB",
         "url": _RELEASE_BASE + "/opus-mt-zh-en-ov-fp16.zip",
         "size_mb": 197,
     },
     {
         "id": "opus-mt-zh-en-fp32",
-        "dir": "opus-mt-zh-en-ov-fp32",
-        "label": "中 → 英（opus-mt-zh-en · FP32）",
-        "model": "中 → 英 · opus-mt-zh-en",
+        "dir": "opus-mt-zh-en-fp32",
+        "label": "opus-mt-zh-en",
+        "model": "opus-mt-zh-en",
         "precision": "FP32",
-        "precision_desc": "最高精度：不损失任何数值精度，体积最大",
+        "precision_desc": "最高精度：不做任何数值压缩，体积最大",
         "src": "zh", "dst": "en",
-        "note": "FP32 约 425 MB",
         "url": _RELEASE_BASE + "/opus-mt-zh-en-ov-fp32.zip",
-        "size_mb": 400,
+        "size_mb": 395,
     },
 ]
 
@@ -78,7 +75,7 @@ def entries_for_model(model_label):
 PRESETS = [
     {
         "id": "Helsinki-NLP/opus-mt-zh-en",
-        "dir": "opus-mt-zh-en-ov",
+        "dir": "opus-mt-zh-en",
         "label": "中 → 英（opus-mt-zh-en）",
         "src": "zh", "dst": "en",
         "note": "默认模型，约 445 MB（FP32）",
@@ -397,10 +394,11 @@ def download_zip_model(entry, on_line=None, on_progress=None, should_stop=None):
     if not is_valid_model_dir(target):
         return False, "下载包内容不完整（缺少 openvino_*_model.xml/.bin）"
 
-    # 补 meta.json（语言方向）
-    if not os.path.exists(os.path.join(target, "meta.json")):
-        write_meta(target, {"src": entry["src"], "dst": entry["dst"],
-                            "label": entry["label"]})
+    # 按清单写入 meta.json：显示名统一用原始模型名，不依赖压缩包里的旧标签
+    write_meta(target, {"src": entry["src"], "dst": entry["dst"],
+                        "label": entry["label"],
+                        "precision": entry.get("precision", ""),
+                        "source": entry.get("url", "")})
     if on_line:
         on_line("安装完成: " + target)
     return True, "完成：%s" % entry["label"]
@@ -438,3 +436,4 @@ def delete_model(model_path):
         return True, "已删除"
     except Exception as e:
         return False, f"删除失败: {e}"
+

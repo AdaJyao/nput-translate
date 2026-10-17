@@ -4,7 +4,7 @@
 import os, sys
 import openvino as ov
 
-MODEL = os.path.join(os.path.dirname(__file__), "models", "opus-mt-zh-en-ov")
+MODEL = os.path.join(os.path.dirname(__file__), "models", "opus-mt-zh-en")
 
 def show(name, xml):
     p = os.path.join(MODEL, xml)
@@ -21,3 +21,4 @@ def show(name, xml):
 show("encoder", "openvino_encoder_model.xml")
 show("decoder", "openvino_decoder_model.xml")
 show("decoder_with_past", "openvino_decoder_with_past_model.xml")
+

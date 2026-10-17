@@ -37,7 +37,7 @@ def app_dir():
 
 APP_DIR = app_dir()
 CONFIG_PATH = os.path.join(APP_DIR, "config.json")
-MODEL_DIR = os.path.join(APP_DIR, "models", "opus-mt-zh-en-ov")
+MODEL_DIR = os.path.join(APP_DIR, "models", "opus-mt-zh-en")
 
 DEFAULTS = {
     "device": "NPU",                 # NPU | CPU
@@ -361,3 +361,4 @@ def wait_service_ready(timeout=120, on_tick=None):
             on_tick()
         time.sleep(0.5)
     return False
+

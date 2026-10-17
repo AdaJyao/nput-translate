@@ -46,7 +46,7 @@ for _stream in (sys.stdout, sys.stderr):
 
 HOST = "127.0.0.1"
 PORT = 8715
-MODEL_DIR = os.path.join(HERE, "models", "opus-mt-zh-en-ov")
+MODEL_DIR = os.path.join(HERE, "models", "opus-mt-zh-en")
 DEVICE = os.environ.get("NPU_TRANSLATE_DEVICE", "NPU")
 
 
@@ -67,7 +67,10 @@ class TranslateServer:
         self._t0 = time.time()
         self._nreq = 0
         self.devices = self._detect_devices()
-        self._load(model_dir or cfg.get("model_dir", MODEL_DIR), self.device)
+        # config 里的 model_dir 可能是相对路径；找不到就自动退到 models\ 下任一可用模型
+        from translate import resolve_model_dir
+        raw = model_dir or cfg.get("model_dir", MODEL_DIR)
+        self._load(resolve_model_dir(raw), self.device)
 
     @staticmethod
     def _detect_devices():
@@ -273,3 +276,4 @@ if __name__ == "__main__":
     if not args.no_http:
         print(f"[服务] HTTP {srv.host}:{http_port}（kiss-translator）", flush=True)
     srv.serve_forever()
+

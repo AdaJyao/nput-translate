@@ -32,7 +32,37 @@ import numpy as np
 
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 
-MODEL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models", "opus-mt-zh-en-ov")
+MODELS_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
+
+# 模型目录名一律用原始精简名（如 opus-mt-zh-en），不再带 -ov 后缀
+MODEL_DIR = os.path.join(MODELS_ROOT, "opus-mt-zh-en")
+
+
+def resolve_model_dir(preferred=None):
+    """解析实际可用的模型目录。
+
+    优先级：显式指定 → 约定的默认名 → models\\ 下第一个含 encoder IR 的目录。
+    这样只下载了 FP32 版（opus-mt-zh-en-fp32）也能直接跑起来。
+    """
+    cands = []
+    if preferred:
+        cands.append(preferred if os.path.isabs(preferred)
+                     else os.path.join(os.path.dirname(os.path.abspath(__file__)), preferred))
+    cands.append(MODEL_DIR)
+    for c in cands:
+        if os.path.exists(os.path.join(c, "openvino_encoder_model.xml")):
+            return c
+    try:
+        for name in sorted(os.listdir(MODELS_ROOT)):
+            d = os.path.join(MODELS_ROOT, name)
+            if os.path.isdir(d) and os.path.exists(
+                    os.path.join(d, "openvino_encoder_model.xml")):
+                return d
+    except OSError:
+        pass
+    return cands[0] if cands else MODEL_DIR
+
+
 ENC_SEQ = 64       # 源句固定长度（中文短句通常 < 30 token；实测 64/64 比 128/128 快 38%）
 DEC_SEQ = 64       # 解码固定长度（英文短句通常 < 40 token）
 ENC_SEQ_MAX = 128  # 超长句回退档位（见 _seq_tiers）

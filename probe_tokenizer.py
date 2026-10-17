@@ -5,7 +5,7 @@ import os
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 from transformers import AutoTokenizer
 
-MD = os.path.join(os.path.dirname(__file__), "models", "opus-mt-zh-en-ov")
+MD = os.path.join(os.path.dirname(__file__), "models", "opus-mt-zh-en")
 tok = AutoTokenizer.from_pretrained(MD)
 print("pad_token_id      =", tok.pad_token_id, repr(tok.pad_token))
 print("eos_token_id      =", tok.eos_token_id, repr(tok.eos_token))
@@ -25,3 +25,4 @@ for tid in (0, 1, 65000, 58100):
         print(f"  id {tid} -> {tok.convert_ids_to_tokens(tid)!r}")
     except Exception as e:
         print(f"  id {tid} -> ERR {e}")
+

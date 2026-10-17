@@ -27,7 +27,7 @@ except Exception as e:
     log("import openvino 失败:", repr(e))
     sys.exit(2)
 
-OV = os.path.join(os.path.dirname(__file__), "models", "opus-mt-zh-en-ov")
+OV = os.path.join(os.path.dirname(__file__), "models", "opus-mt-zh-en")
 ENC = os.path.join(OV, "openvino_encoder_model.xml")
 DEC = os.path.join(OV, "openvino_decoder_model.xml")
 
@@ -84,3 +84,4 @@ try:
 except Exception as e:
     log("未预期异常:", repr(e))
 log("DONE")
+
