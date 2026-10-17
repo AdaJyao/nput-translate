@@ -223,15 +223,39 @@ def fetch_devices():
 
 
 # ============================================================ 进程管理
+# Windows 进程创建标志
+CREATE_NO_WINDOW = 0x08000000          # 不创建控制台窗口（GUI 起控制台子进程必须带）
+CREATE_NEW_PROCESS_GROUP = 0x00000200
+DETACHED_PROCESS = 0x00000008
+
+# GUI 本身没有控制台；任何控制台子进程（powershell/python.exe）如果不带
+# CREATE_NO_WINDOW，就会在桌面上闪出或留下一个黑色控制台窗口。
+NO_WINDOW = CREATE_NO_WINDOW
+
+
+def run_hidden(args, timeout=30, encoding="utf-8"):
+    """静默执行子进程并捕获输出——不弹黑窗口。"""
+    return subprocess.run(args, capture_output=True, text=True, timeout=timeout,
+                          encoding=encoding, errors="replace",
+                          creationflags=NO_WINDOW)
+
+
+def popen_hidden(args, cwd=None, env=None, stdout=None):
+    """后台静默启动长驻子进程——不弹黑窗口。"""
+    return subprocess.Popen(args, cwd=cwd, env=env,
+                            stdout=stdout, stderr=subprocess.STDOUT,
+                            creationflags=NO_WINDOW | CREATE_NEW_PROCESS_GROUP,
+                            close_fds=True)
+
+
 def _list_procs():
     """列出本机 python / NPU 相关进程（CIM，无需 psutil）。"""
     try:
         ps = ("Get-CimInstance Win32_Process | "
               "Where-Object { $_.Name -like 'python*' -or $_.Name -like '*NPU*' } | "
               "Select-Object ProcessId,Name,CommandLine | ConvertTo-Json -Compress")
-        out = subprocess.run(["powershell", "-NoProfile", "-Command", ps],
-                             capture_output=True, text=True, timeout=25,
-                             encoding="utf-8", errors="replace").stdout.strip()
+        out = run_hidden(["powershell", "-NoProfile", "-Command", ps],
+                         timeout=25).stdout.strip()
         if not out:
             return []
         data = json.loads(out)
@@ -269,9 +293,8 @@ def tray_running():
               "Where-Object { $_.Name -eq 'powershell.exe' -and $_.ProcessId -ne $me "
               "-and $_.CommandLine -like '*tray.ps1*' } | "
               "Select-Object -First 1 -ExpandProperty ProcessId")
-        out = subprocess.run(["powershell", "-NoProfile", "-Command", ps],
-                             capture_output=True, text=True, timeout=20,
-                             encoding="utf-8", errors="replace").stdout.strip()
+        out = run_hidden(["powershell", "-NoProfile", "-Command", ps],
+                         timeout=20).stdout.strip()
         return bool(out)
     except Exception:
         return False
@@ -291,21 +314,21 @@ def start_service():
         return False, ("找不到服务程序 NPU翻译-服务.exe，"
                        "请确认它与界面程序在同一目录。")
     try:
-        flags = 0x00000008 | 0x00000200  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+        # 只用 CREATE_NO_WINDOW，不加 DETACHED_PROCESS：
+        # 两者互斥（DETACHED_PROCESS 会让 CREATE_NO_WINDOW 失效），
+        # 而开发模式下服务是 python.exe（控制台程序），带 DETACHED 会留下一个黑色控制台窗口。
+        # Windows 不会因父进程退出而杀掉子进程，所以服务仍能在界面关闭后常驻。
         env = dict(os.environ)
         env.setdefault("HF_HOME", os.path.join(APP_DIR, ".hf-cache"))
         env.setdefault("HOME", env.get("USERPROFILE", APP_DIR))
         env["OPENVINO_DISABLE_TELEMETRY"] = "1"
         # 关键：服务是控制台程序，输出被重定向到 service.log。
         # 中文 Windows 下 Python 默认按 GBK 写，GUI 按 UTF-8 读 → 日志全是乱码。
-        # 强制子进程用 UTF-8 输出。
         env["PYTHONIOENCODING"] = "utf-8"
         env["PYTHONUTF8"] = "1"
         env.pop("HF_ENDPOINT", None)
         logf = open(os.path.join(APP_DIR, "service.log"), "a", encoding="utf-8")
-        subprocess.Popen(cmd, cwd=APP_DIR, env=env,
-                         stdout=logf, stderr=subprocess.STDOUT,
-                         creationflags=flags, close_fds=True)
+        popen_hidden(cmd, cwd=APP_DIR, env=env, stdout=logf)
         return True, "服务启动中"
     except Exception as e:
         return False, f"启动失败: {e}"
@@ -322,8 +345,7 @@ def stop_service():
     pids = service_pids()
     for pid in pids:
         try:
-            subprocess.run(["taskkill", "/PID", str(pid), "/F", "/T"],
-                           capture_output=True, timeout=10)
+            run_hidden(["taskkill", "/PID", str(pid), "/F", "/T"], timeout=10)
         except Exception:
             pass
     return True, f"已强制结束 {len(pids)} 个进程"

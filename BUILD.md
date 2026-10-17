@@ -144,6 +144,18 @@ $me = $PID
 解法是单实例：GUI 监听 `127.0.0.1:8717`，托盘先发 `show` 唤醒已有窗口，
 连不上才启动新进程；GUI 启动时也先探测这个端口，已在运行就唤醒并退出。
 
+### 坑 11：GUI 里起控制台子进程会弹出黑窗口
+
+GUI 本身没有控制台。任何控制台子进程（`powershell`、`python.exe`、`taskkill`）
+如果不带 `CREATE_NO_WINDOW`，桌面上就会闪出或留下一个黑色控制台窗口。
+
+尤其注意：**`DETACHED_PROCESS` 会让 `CREATE_NO_WINDOW` 失效**。之前服务用
+`DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP` 启动，结果开发模式下留下一个
+标题为 `...\python.exe` 的黑窗口。正确做法是只用 `CREATE_NO_WINDOW`
+（Windows 本来就不会因父进程退出而杀掉子进程，服务照样能常驻）。
+
+代码里统一走 `nput_core.run_hidden()` / `nput_core.popen_hidden()`。
+
 ## 打包后可用的诊断端点
 
 服务起来后用浏览器或 curl 访问：

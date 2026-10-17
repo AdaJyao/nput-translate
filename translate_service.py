@@ -89,6 +89,14 @@ class TranslateServer:
         self.model_dir = model_dir
         self.compiled, self.tok = None, None
         self.load_error = None
+        # 语言方向：模型目录里 meta.json 决定（不同模型的翻译方向不同）
+        try:
+            import model_manager as mm
+            meta = mm.read_meta(model_dir)
+        except Exception:
+            meta = {"src": "zh", "dst": "en", "label": os.path.basename(model_dir)}
+        self.meta = meta
+        print(f"[服务] 语言方向: {meta.get('src')} -> {meta.get('dst')}", flush=True)
         try:
             base = (int(cfg.get("enc_seq", 64)), int(cfg.get("dec_seq", 64)))
             tiers = [base] + [t for t in _seq_tiers() if t != base]  # 更大档兜底长句
@@ -170,10 +178,13 @@ class TranslateServer:
             "ok": True,
             "cmd": "status",
             "device": self.device,
-            "tiers": sorted(self.compiled.keys()),
+            "tiers": sorted(self.compiled.keys()) if self.compiled else [],
             "uptime_s": round(time.time() - self._t0, 1),
             "pid": _os.getpid(),
             "requests": self._nreq,
+            "src_lang": (getattr(self, "meta", {}) or {}).get("src", "zh"),
+            "dst_lang": (getattr(self, "meta", {}) or {}).get("dst", "en"),
+            "model": _os.path.basename(getattr(self, "model_dir", "") or ""),
         }
 
     def _conn_thread(self, conn):

@@ -57,7 +57,12 @@ def detect_lang(text):
         return "en"
     total = len(text)
     cjk = len(_CJK_RE.findall(text))
-    return "zh-CN" if (total and cjk / total > 0.2) else "en"
+    return "zh" if (total and cjk / total > 0.2) else "en"
+
+
+def lang_code(lang):
+    """内部语言代号 → kiss 规范代码。"""
+    return "zh-CN" if lang == "zh" else (lang or "en")
 
 
 def _norm_target(to):
@@ -70,11 +75,12 @@ def _norm_target(to):
     return "other"
 
 
-def should_translate(text, to):
-    """决定是否真正翻译。仅支持 中 -> 英。"""
-    if _norm_target(to) != "en":
+def should_translate(text, to, src="zh", dst="en"):
+    """按当前模型的语言方向决定是否真正翻译。
+    src/dst 来自模型目录的 meta.json（如 opus-mt-en-zh 就是 en→zh）。"""
+    if _norm_target(to) != (dst or "en"):
         return False
-    return detect_lang(text) == "zh-CN"
+    return detect_lang(text) == (src or "zh")
 
 
 def build_response_nobatch(orig_text, translated_text, src_lang):

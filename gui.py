@@ -117,7 +117,7 @@ class App(ctk.CTk):
         navwrap = ctk.CTkFrame(self, fg_color="transparent")
         navwrap.pack(fill="x", padx=PAD, pady=(0, 10))
         self.nav = ctk.CTkSegmentedButton(
-            navwrap, values=["翻译", "服务", "设置", "插件", "关于"],
+            navwrap, values=["翻译", "服务", "设置", "模型", "插件", "关于"],
             font=F_H, height=38, command=self._switch_tab)
         self.nav.pack(anchor="w")
         self.nav.set("翻译")
@@ -128,7 +128,7 @@ class App(ctk.CTk):
         self.body.grid_columnconfigure(0, weight=1)
 
         self.pages = {}
-        for name in ("翻译", "服务", "设置", "插件", "关于"):
+        for name in ("翻译", "服务", "设置", "模型", "插件", "关于"):
             fr = ctk.CTkFrame(self.body, fg_color="transparent")
             fr.grid(row=0, column=0, sticky="nsew")
             self.pages[name] = fr
@@ -136,6 +136,7 @@ class App(ctk.CTk):
         self._build_translate(self.pages["翻译"])
         self._build_service(self.pages["服务"])
         self._build_settings(self.pages["设置"])
+        self._build_models(self.pages["模型"])
         self._build_plugin(self.pages["插件"])
         self._build_about(self.pages["关于"])
         self._switch_tab("翻译")
@@ -496,9 +497,9 @@ class App(ctk.CTk):
                     try:
                         os.remove(lnk)
                     except Exception:
-                        subprocess.run(["powershell", "-NoProfile", "-Command",
-                                        f'Remove-Item -LiteralPath "{lnk}" -Force'],
-                                       capture_output=True, timeout=20)
+                        core.run_hidden(["powershell", "-NoProfile", "-Command",
+                                         f'Remove-Item -LiteralPath "{lnk}" -Force'],
+                                        timeout=20)
                 return
             target_cmd = core.service_cmd()
             if not target_cmd:
@@ -513,17 +514,209 @@ class App(ctk.CTk):
                         "$l=$w.CreateShortcut($Lnk)\n"
                         "$l.TargetPath=$T\n$l.Arguments=$A\n"
                         "$l.WorkingDirectory=$W\n$l.Save()\n")
-            subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
-                            "-File", helper, "-Lnk", lnk, "-T", target,
-                            "-A", args, "-W", core.APP_DIR],
-                           capture_output=True, text=True, timeout=30,
-                           encoding="utf-8", errors="replace")
+            core.run_hidden(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                             "-File", helper, "-Lnk", lnk, "-T", target,
+                             "-A", args, "-W", core.APP_DIR], timeout=30)
             try:
                 os.remove(helper)
             except Exception:
                 pass
         except Exception as e:
             print("[自启]", repr(e))
+
+    # ------------------------------------------------------------ 模型页
+    def _build_models(self, f):
+        wrap = ctk.CTkScrollableFrame(f, fg_color="transparent")
+        wrap.pack(fill="both", expand=True)
+
+        ctk.CTkLabel(wrap, text="已安装模型", font=F_H).pack(anchor="w", pady=(8, 2))
+        ctk.CTkLabel(wrap, text="选择模型后会重启服务生效。语言方向由模型决定。",
+                     font=F_SMALL, text_color="#8a8a8a").pack(anchor="w", pady=(0, 8))
+
+        # 列表区（每行一个模型）
+        self.model_list = ctk.CTkFrame(wrap, corner_radius=10)
+        self.model_list.pack(fill="x", pady=(0, 10))
+
+        bar = ctk.CTkFrame(wrap, fg_color="transparent")
+        bar.pack(fill="x", pady=(0, 12))
+        ctk.CTkButton(bar, text="刷新", width=90, height=34, font=F_BODY,
+                      fg_color="#555555", hover_color="#666666",
+                      command=self._refresh_models).pack(side="left")
+        ctk.CTkButton(bar, text="打开模型目录", width=130, height=34, font=F_BODY,
+                      fg_color="#555555", hover_color="#666666",
+                      command=self._open_models_dir).pack(side="left", padx=8)
+        self.lbl_model = ctk.CTkLabel(bar, text="", font=F_SMALL)
+        self.lbl_model.pack(side="left", padx=8)
+
+        ttk_sep = ctk.CTkLabel(wrap, text="", font=("", 2))
+        ttk_sep.pack(pady=2)
+
+        ctk.CTkLabel(wrap, text="下载模型", font=F_H).pack(anchor="w", pady=(6, 2))
+        can = True
+        try:
+            import model_manager as mm
+            can = mm.can_convert()
+        except Exception:
+            mm = None
+        hint = ("下载后会自动转换为 OpenVINO 格式（每个约 445 MB，需联网，耗时几分钟）。"
+                if can else
+                "当前环境缺少转换工具（optimum-intel + torch），只能下载已导出的模型。")
+        ctk.CTkLabel(wrap, text=hint, font=F_SMALL, text_color="#8a8a8a",
+                     wraplength=640, justify="left").pack(anchor="w", pady=(0, 8))
+
+        # 预设下拉 + 下载按钮
+        self._mm = mm
+        presets = [p["label"] for p in (mm.PRESETS if mm else [])]
+        row = ctk.CTkFrame(wrap, fg_color="transparent")
+        row.pack(fill="x", pady=(0, 8))
+        self.opt_preset = ctk.CTkOptionMenu(row, values=presets or ["（无）"],
+                                            width=330, font=F_BODY)
+        self.opt_preset.pack(side="left")
+        self.btn_download = ctk.CTkButton(row, text="下载并转换", width=130, height=34,
+                                          font=F_BODY, command=self._download_model)
+        self.btn_download.pack(side="left", padx=10)
+        self.lbl_dl = ctk.CTkLabel(row, text="", font=F_SMALL)
+        self.lbl_dl.pack(side="left", padx=6)
+
+        self.dl_log = ctk.CTkTextbox(wrap, font=("Consolas", 11), height=200)
+        self.dl_log.pack(fill="x", pady=(4, 8))
+        self.dl_log.configure(state="disabled")
+
+        ctk.CTkLabel(wrap, text="提示：模型目录放在程序目录的 models\\ 下，"
+                                "每个模型一个子目录，包含 openvino_*_model.xml/.bin 等文件。",
+                     font=F_SMALL, text_color="#8a8a8a", wraplength=640,
+                     justify="left").pack(anchor="w", pady=(4, 8))
+
+        self._dl_stop = False
+        self._refresh_models()
+
+    def _open_models_dir(self):
+        try:
+            import model_manager as mm
+            d = mm.MODELS_DIR
+            os.makedirs(d, exist_ok=True)
+            os.startfile(d)
+        except Exception as e:
+            print("[模型] 打开目录失败:", repr(e))
+
+    def _refresh_models(self):
+        for w in self.model_list.winfo_children():
+            w.destroy()
+        try:
+            import model_manager as mm
+            items = mm.list_installed()
+        except Exception as e:
+            ctk.CTkLabel(self.model_list, text=f"读取模型失败: {e}",
+                         font=F_BODY, text_color="#e05a5a").pack(anchor="w", padx=14, pady=10)
+            return
+        if not items:
+            ctk.CTkLabel(self.model_list, text="还没有安装任何模型。",
+                         font=F_BODY, text_color="#8a8a8a").pack(anchor="w", padx=14, pady=12)
+            return
+
+        for it in items:
+            row = ctk.CTkFrame(self.model_list, fg_color="transparent")
+            row.pack(fill="x", padx=12, pady=6)
+            mark = "●" if it["active"] else "○"
+            color = "#3ba55d" if it["active"] else "#8a8a8a"
+            ctk.CTkLabel(row, text=mark, font=F_H, text_color=color,
+                         width=22).pack(side="left")
+            ctk.CTkLabel(row, text=it["label"], font=F_BODY,
+                         width=250, anchor="w").pack(side="left")
+            ctk.CTkLabel(row, text=f"{it['src']} → {it['dst']}", font=F_SMALL,
+                         text_color="#8a8a8a", width=80,
+                         anchor="w").pack(side="left")
+            ctk.CTkLabel(row, text=f"{it['size_mb']} MB", font=F_SMALL,
+                         text_color="#8a8a8a", width=80,
+                         anchor="w").pack(side="left")
+            if it["active"]:
+                ctk.CTkLabel(row, text="使用中", font=F_SMALL,
+                             text_color="#3ba55d").pack(side="left")
+            else:
+                ctk.CTkButton(row, text="设为当前", width=90, height=30, font=F_SMALL,
+                              command=lambda p=it["path"]: self._activate_model(p)
+                              ).pack(side="left", padx=(6, 0))
+                ctk.CTkButton(row, text="删除", width=60, height=30, font=F_SMALL,
+                              fg_color="#7a3030", hover_color="#8d3a3a",
+                              command=lambda p=it["path"], n=it["name"]:
+                              self._delete_model(p, n)).pack(side="left", padx=6)
+
+    def _activate_model(self, path):
+        try:
+            import model_manager as mm
+            mm.set_active(path)
+            self.cfg = core.load_config()
+        except Exception as e:
+            self.lbl_model.configure(text=f"切换失败: {e}", text_color="#e05a5a")
+            return
+        self.lbl_model.configure(text="已切换，正在重启服务…", text_color="#3ba55d")
+        threading.Thread(target=self._activate_and_restart, daemon=True).start()
+
+    def _activate_and_restart(self):
+        core.stop_service()
+        core.wait_service_ready(timeout=10)
+        ok, msg = core.start_service()
+        if ok:
+            core.wait_service_ready()
+        self.uiq.post(self._refresh_models)
+        self.uiq.post(self._refresh_status)
+        self.uiq.post(self.lbl_model.configure, {"text": "已切换并重启服务",
+                                                 "text_color": "#3ba55d"})
+
+    def _delete_model(self, path, name):
+        if not messagebox.askyesno("删除模型", f"确定删除模型「{name}」？\n\n"
+                                              f"{path}\n\n此操作不可撤销。"):
+            return
+        try:
+            import model_manager as mm
+            ok, msg = mm.delete_model(path)
+        except Exception as e:
+            ok, msg = False, str(e)
+        self.lbl_model.configure(text=msg, text_color="#3ba55d" if ok else "#e05a5a")
+        self._refresh_models()
+
+    def _dl_log_write(self, line):
+        self.dl_log.configure(state="normal")
+        self.dl_log.insert("end", line + "\n")
+        self.dl_log.see("end")
+        self.dl_log.configure(state="disabled")
+
+    def _download_model(self):
+        if not self._mm:
+            messagebox.showwarning("不可用", "模型管理模块未加载")
+            return
+        if not self._mm.can_convert():
+            messagebox.showinfo("需要转换环境", self._mm.convert_hint())
+            return
+        label = self.opt_preset.get()
+        preset = next((p for p in self._mm.PRESETS if p["label"] == label), None)
+        if not preset:
+            return
+        if os.path.isdir(os.path.join(self._mm.MODELS_DIR, preset["dir"])) and \
+                self._mm.is_valid_model_dir(os.path.join(self._mm.MODELS_DIR, preset["dir"])):
+            if not messagebox.askyesno("已存在", "该模型目录已存在，重新下载会覆盖。继续？"):
+                return
+
+        self._dl_stop = False
+        self.btn_download.configure(state="disabled", text="下载中…")
+        self.lbl_dl.configure(text="开始…", text_color="#8a8a8a")
+        self.dl_log.configure(state="normal")
+        self.dl_log.delete("1.0", "end")
+        self.dl_log.configure(state="disabled")
+
+        def _run():
+            def on_line(s):
+                self.uiq.post(self._dl_log_write, s)
+            ok, msg = self._mm.download_and_convert(
+                preset, on_line=on_line, should_stop=lambda: self._dl_stop)
+            self.uiq.post(self._dl_done, ok, msg)
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _dl_done(self, ok, msg):
+        self.btn_download.configure(state="normal", text="下载并转换")
+        self.lbl_dl.configure(text=msg, text_color="#3ba55d" if ok else "#e05a5a")
+        self._refresh_models()
 
     # ------------------------------------------------------------ 插件页
     def _build_plugin(self, f):

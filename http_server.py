@@ -146,10 +146,12 @@ def make_handler(server_ref):
                 self._send_json({"ok": False, "error": "missing 'text'"}, 400)
                 return
             to = body.get("to", "en")
+            src_dir, dst_dir = _model_dirs(server_ref)
             src = kiss_api.detect_lang(text)
-            if not kiss_api.should_translate(text, to):
+            if not kiss_api.should_translate(text, to, src_dir, dst_dir):
                 # 不支持的方向：原样返回，不报错
-                self._send_json(kiss_api.build_response_nobatch(text, text, src))
+                self._send_json(kiss_api.build_response_nobatch(
+                    text, text, kiss_api.lang_code(src)))
                 return
             try:
                 dst, ms, tier = server_ref.translate_http(text)
@@ -161,7 +163,7 @@ def make_handler(server_ref):
                                  "error": f"{type(e).__name__}: {e}",
                                  "_trace": tb[-1200:]}, 500)
                 return
-            resp = kiss_api.build_response_nobatch(text, dst, src)
+            resp = kiss_api.build_response_nobatch(text, dst, kiss_api.lang_code(src))
             resp["_ms"] = round(ms, 1)
             resp["_tier"] = tier
             self._send_json(resp)
@@ -175,20 +177,27 @@ def make_handler(server_ref):
                 self._send_json({"ok": False, "error": "missing 'texts'"}, 400)
                 return
             to = body.get("to", "en")
+            src_dir, dst_dir = _model_dirs(server_ref)
             pairs = []
             for t in texts:
                 src = kiss_api.detect_lang(t)
-                if not t or not kiss_api.should_translate(t, to):
-                    pairs.append((t, src))
+                if not t or not kiss_api.should_translate(t, to, src_dir, dst_dir):
+                    pairs.append((t, kiss_api.lang_code(src)))
                     continue
                 try:
                     dst, _, _ = server_ref.translate_http(t)
-                    pairs.append((dst, src))
+                    pairs.append((dst, kiss_api.lang_code(src)))
                 except Exception:
-                    pairs.append((t, src))
+                    pairs.append((t, kiss_api.lang_code(src)))
             self._send_json(kiss_api.build_response_batch(pairs))
 
     return Handler
+
+
+def _model_dirs(server_ref):
+    """当前模型的语言方向（来自服务加载时的 meta.json）。"""
+    meta = getattr(server_ref, "meta", None) or {}
+    return meta.get("src", "zh"), meta.get("dst", "en")
 
 
 def start_http(server_ref, host, port):
