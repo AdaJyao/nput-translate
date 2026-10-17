@@ -80,6 +80,19 @@ powershell -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File .\tray.p
 .\build.ps1            # 产物在 dist\NPU翻译\
 ```
 
+### 生成安装程序
+
+```powershell
+.\build_installer.ps1  # 产物 dist\NPU翻译-安装程序-1.1.0.exe
+```
+
+安装程序用 Inno Setup 6 制作，特性：
+
+- **可自选安装目录**（默认 `%LOCALAPPDATA%\Programs\NPU 翻译`，免管理员）
+- 可选创建桌面快捷方式、可选开机自启服务
+- 自带卸载程序，卸载会清理配置与日志
+- 安装前自动结束正在运行的服务与界面，避免文件占用
+
 详见 [BUILD.md](BUILD.md)。
 
 ## 服务协议

@@ -33,3 +33,7 @@ Desktop.ini
 
 # 临时/调试脚本
 _*
+
+# 安装程序产物（体积大，用 build_installer.ps1 生成）
+dist/*.exe
+

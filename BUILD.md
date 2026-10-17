@@ -156,6 +156,34 @@ GUI 本身没有控制台。任何控制台子进程（`powershell`、`python.ex
 
 代码里统一走 `nput_core.run_hidden()` / `nput_core.popen_hidden()`。
 
+## 生成安装程序（Inno Setup）
+
+```powershell
+.\build_installer.ps1
+# 产物：dist\NPU翻译-安装程序-<版本>.exe（约 506 MB，压缩自 916 MB）
+```
+
+需要 Inno Setup 6：`winget install JRSoftware.InnoSetup`
+脚本会自动找 `C:\Program Files (x86)\Inno Setup 6\ISCC.exe`。
+
+安装脚本 `installer.iss` 要点：
+
+- `DefaultDirName={localappdata}\Programs\NPU 翻译` + `PrivilegesRequired=lowest`
+  → 默认装到用户目录、免管理员，但**安装向导仍然允许改安装目录**
+- `ChineseSimplified.isl` 是随项目提供的精简中文本地化（Inno 未定义条目自动回退英文）
+- `CloseApplications=no`，改用 `[Code]` 里 taskkill 结束界面与服务
+  （Restart Manager 管不了第二个服务进程）
+- `[UninstallDelete]` 清掉运行时产生的 config.json / 日志 / 后下载的模型
+
+### 坑 12：安装器报 "创建文件夹失败 Error 5"
+
+Inno 安装时会先把自身解压到 `%TEMP%\is-xxxx.tmp`。如果 `%TEMP%` 不可写
+（受限账户、安全软件、或某些沙箱环境），安装器会**启动即失败**，
+在静默模式下表现为退出码 1 或 4，且没有明显提示。
+
+排查：不带 `/VERYSILENT` 运行一次，看弹出的错误框；或把 `TEMP`/`TMP`
+指向可写目录再试。正常用户机器不会遇到。
+
 ## 打包后可用的诊断端点
 
 服务起来后用浏览器或 curl 访问：
