@@ -563,19 +563,34 @@ class App(ctk.CTk):
                      wraplength=640, justify="left").pack(anchor="w", pady=(0, 8))
 
         self._dl_stop = False
-        # 预设下拉 + 下载按钮
-        entries = (mm.MANIFEST if mm else [])
-        labels = [f'{e["label"]} · 约 {e.get("size_mb", "?")} MB' for e in entries]
+        # 模型 + 精度 两级选择
         row = ctk.CTkFrame(wrap, fg_color="transparent")
-        row.pack(fill="x", pady=(0, 8))
-        self.opt_preset = ctk.CTkOptionMenu(row, values=labels or ["（无）"],
-                                            width=360, font=F_BODY)
-        self.opt_preset.pack(side="left")
-        self.btn_download = ctk.CTkButton(row, text="下载并安装", width=130, height=34,
+        row.pack(fill="x", pady=(0, 6))
+        ctk.CTkLabel(row, text="模型", font=F_BODY, width=48,
+                     anchor="w").pack(side="left")
+        self.opt_model = ctk.CTkOptionMenu(
+            row, values=(mm.list_models() if mm else ["（无）"]),
+            width=300, font=F_BODY, command=lambda _v: self._refresh_precision())
+        self.opt_model.pack(side="left", padx=(0, 14))
+
+        ctk.CTkLabel(row, text="精度", font=F_BODY, width=48,
+                     anchor="w").pack(side="left")
+        self.opt_precision = ctk.CTkOptionMenu(
+            row, values=["—"], width=110, font=F_BODY,
+            command=lambda _v: self._show_precision_desc())
+        self.opt_precision.pack(side="left")
+
+        row2 = ctk.CTkFrame(wrap, fg_color="transparent")
+        row2.pack(fill="x", pady=(0, 8))
+        self.btn_download = ctk.CTkButton(row2, text="下载并安装", width=130, height=34,
                                           font=F_BODY, command=self._download_model)
-        self.btn_download.pack(side="left", padx=10)
-        self.lbl_dl = ctk.CTkLabel(row, text="", font=F_SMALL)
-        self.lbl_dl.pack(side="left", padx=6)
+        self.btn_download.pack(side="left")
+        self.lbl_dl = ctk.CTkLabel(row2, text="", font=F_SMALL)
+        self.lbl_dl.pack(side="left", padx=10)
+        self.lbl_prec = ctk.CTkLabel(wrap, text="", font=F_SMALL,
+                                     text_color="#8a8a8a", wraplength=640,
+                                     justify="left")
+        self.lbl_prec.pack(anchor="w", pady=(0, 8))
 
         self.pbar = ctk.CTkProgressBar(wrap, height=8)
         self.pbar.pack(fill="x", pady=(0, 8))
@@ -590,6 +605,7 @@ class App(ctk.CTk):
                      font=F_SMALL, text_color="#8a8a8a", wraplength=640,
                      justify="left").pack(anchor="w", pady=(4, 8))
 
+        self._refresh_precision()
         self._refresh_models()
 
     def _open_models_dir(self):
@@ -625,6 +641,10 @@ class App(ctk.CTk):
                          width=22).pack(side="left")
             ctk.CTkLabel(row, text=it["label"], font=F_BODY,
                          width=250, anchor="w").pack(side="left")
+            prec = it.get("precision") or "—"
+            ctk.CTkLabel(row, text=prec, font=F_SMALL,
+                         text_color="#8a8a8a", width=56,
+                         anchor="w").pack(side="left")
             ctk.CTkLabel(row, text=f"{it['src']} → {it['dst']}", font=F_SMALL,
                          text_color="#8a8a8a", width=80,
                          anchor="w").pack(side="left")
@@ -683,6 +703,39 @@ class App(ctk.CTk):
         self.dl_log.see("end")
         self.dl_log.configure(state="disabled")
 
+    def _refresh_precision(self):
+        """按当前「模型」刷新「精度」下拉。"""
+        if not self._mm:
+            return
+        entries = self._mm.entries_for_model(self.opt_model.get())
+        names = [e["precision"] for e in entries]
+        if not names:
+            return
+        self.opt_precision.configure(values=names)
+        # 默认选第一个（清单里 FP16 在前）
+        self.opt_precision.set(names[0])
+        self._show_precision_desc()
+
+    def _show_precision_desc(self):
+        if not self._mm:
+            return
+        e = self._current_entry()
+        if not e:
+            return
+        self.lbl_prec.configure(
+            text=f'{e["precision"]}：{e.get("precision_desc", "")}'
+                 f'（约 {e.get("size_mb", "?")} MB）')
+
+    def _current_entry(self):
+        if not self._mm:
+            return None
+        model = self.opt_model.get()
+        prec = self.opt_precision.get()
+        for e in self._mm.entries_for_model(model):
+            if e["precision"] == prec:
+                return e
+        return None
+
     def _dl_progress(self, done, total):
         if total:
             self.pbar.set(min(1.0, done / total))
@@ -691,17 +744,14 @@ class App(ctk.CTk):
         if not self._mm:
             messagebox.showwarning("不可用", "模型管理模块未加载")
             return
-        label = self.opt_preset.get()
-        entry = None
-        for e in self._mm.MANIFEST:
-            if label.startswith(e["label"]):
-                entry = e
-                break
+        entry = self._current_entry()
         if not entry:
+            messagebox.showwarning("未选择", "请先选择模型和精度")
             return
         target = os.path.join(self._mm.MODELS_DIR, entry["dir"])
         if os.path.isdir(target) and self._mm.is_valid_model_dir(target):
-            if not messagebox.askyesno("已存在", "该模型已安装，重新下载会覆盖。继续？"):
+            if not messagebox.askyesno("已存在",
+                                       f'已安装「{entry["label"]}」，重新下载会覆盖。继续？'):
                 return
 
         self._dl_stop = False

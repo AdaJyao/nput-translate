@@ -32,6 +32,7 @@ MODELS_DIR = os.path.join(APP_DIR, "models")
 # 内置可下载模型清单。
 # 安装包不再内置模型（否则体积翻倍），改为首次使用时从这里下载现成的 OpenVINO IR 包。
 # url 指向 GitHub Release 上的附件（公开仓库，无需登录）。
+# 同一模型的不同精度作为独立条目，装到不同目录，可随时切换对比。
 _RELEASE_BASE = "https://github.com/AdaJyao/nput-translate/releases/download/v1.2.0"
 
 MANIFEST = [
@@ -39,12 +40,39 @@ MANIFEST = [
         "id": "opus-mt-zh-en",
         "dir": "opus-mt-zh-en-ov",
         "label": "中 → 英（opus-mt-zh-en）",
+        "model": "中 → 英 · opus-mt-zh-en",
+        "precision": "FP16",
+        "precision_desc": "推荐：体积减半，NPU 原生按 FP16 计算，译文与 FP32 一致",
         "src": "zh", "dst": "en",
         "note": "推荐，FP16 约 212 MB",
         "url": _RELEASE_BASE + "/opus-mt-zh-en-ov-fp16.zip",
         "size_mb": 197,
     },
+    {
+        "id": "opus-mt-zh-en-fp32",
+        "dir": "opus-mt-zh-en-ov-fp32",
+        "label": "中 → 英（opus-mt-zh-en · FP32）",
+        "model": "中 → 英 · opus-mt-zh-en",
+        "precision": "FP32",
+        "precision_desc": "最高精度：不损失任何数值精度，体积最大",
+        "src": "zh", "dst": "en",
+        "note": "FP32 约 425 MB",
+        "url": _RELEASE_BASE + "/opus-mt-zh-en-ov-fp32.zip",
+        "size_mb": 400,
+    },
 ]
+
+# 当前清单里出现过的模型（用于界面「模型」下拉）
+def list_models():
+    out = []
+    for m in MANIFEST:
+        if m["model"] not in out:
+            out.append(m["model"])
+    return out
+
+
+def entries_for_model(model_label):
+    return [m for m in MANIFEST if m["model"] == model_label]
 
 # 兼容旧名字（源码环境下仍可用 optimum-cli 自行导出）
 PRESETS = [
@@ -121,6 +149,18 @@ def is_valid_model_dir(d):
     return all(os.path.exists(os.path.join(d, f)) for f in REQUIRED_FILES)
 
 
+def _guess_precision(dirname):
+    """meta.json 没写精度时，按目录名猜。"""
+    n = (dirname or "").lower()
+    if "fp32" in n:
+        return "FP32"
+    if "int8" in n:
+        return "INT8"
+    if "fp16" in n:
+        return "FP16"
+    return "—"
+
+
 def dir_size(d):
     try:
         return sum(os.path.getsize(os.path.join(d, f))
@@ -148,6 +188,8 @@ def list_installed():
             "label": meta.get("label") or name,
             "src": meta.get("src", "zh"),
             "dst": meta.get("dst", "en"),
+            "precision": (meta.get("precision")
+                          or _guess_precision(name)),
             "active": os.path.normcase(os.path.normpath(d)) == active_path,
         })
     return out
