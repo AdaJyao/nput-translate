@@ -13,11 +13,26 @@ Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
 $Port = 8716
+$ShowPort = 8717   # GUI 的单实例唤起端口
 
 function Test-HttpUp {
     try {
         $c = New-Object System.Net.Sockets.TcpClient
         $c.Connect('127.0.0.1', $Port)
+        $c.Close()
+        return $true
+    } catch { return $false }
+}
+
+# 通知已在运行的 GUI 把窗口叫出来。成功返回 $true。
+function Invoke-ShowExisting {
+    try {
+        $c = New-Object System.Net.Sockets.TcpClient
+        $c.Connect('127.0.0.1', $ShowPort)
+        $s = $c.GetStream()
+        $bytes = [System.Text.Encoding]::ASCII.GetBytes("show`n")
+        $s.Write($bytes, 0, $bytes.Length)
+        $s.Flush()
         $c.Close()
         return $true
     } catch { return $false }
@@ -56,6 +71,9 @@ function Get-ServiceCommand {
 }
 
 function Start-Gui {
+    # 已有界面在跑（可能藏在托盘）→ 直接呼出，不要再开一个进程
+    if (Invoke-ShowExisting) { return }
+
     $cmd = Get-GuiCommand
     if (-not $cmd) {
         [System.Windows.Forms.MessageBox]::Show(
@@ -68,6 +86,9 @@ function Start-Gui {
         } else {
             Start-Process -FilePath $cmd.Exe -WorkingDirectory $here
         }
+        # 等界面起来后再点一次，让新实例把窗口显示出来
+        Start-Sleep -Milliseconds 1500
+        Invoke-ShowExisting | Out-Null
     } catch {
         [System.Windows.Forms.MessageBox]::Show(
             "启动界面失败：$($_.Exception.Message)", "NPU 翻译") | Out-Null
@@ -114,6 +135,14 @@ if ($iconPath) {
 }
 $ni.Text = "NPU 翻译"
 $ni.Visible = $true
+
+# Windows 11 默认把新出现的托盘图标收进任务栏的「^」溢出区，用户容易以为没启动。
+# 首次驻留时弹一条提示，引导去溢出区找（并把图标拖到任务栏常显）。
+try {
+    $ni.ShowBalloonTip(6000, "NPU 翻译已最小化到托盘",
+        "如果任务栏没看到图标，请点任务栏的 ^ 展开区查看，可把它拖到任务栏常显。",
+        [System.Windows.Forms.ToolTipIcon]::Info)
+} catch { }
 
 $menu = New-Object System.Windows.Forms.ContextMenuStrip
 

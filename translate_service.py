@@ -35,6 +35,15 @@ if not os.environ.get("HOME"):
 os.environ.setdefault("OPENVINO_DISABLE_TELEMETRY", "1")
 os.environ.pop("HF_ENDPOINT", None)  # hf-mirror 连不上，只用官方源
 
+# 强制 UTF-8 输出。服务是控制台程序，stdout/stderr 被重定向到 service.log；
+# 中文 Windows 下默认按 GBK 写，GUI 按 UTF-8 读就会显示一堆乱码。
+# 注意：打包成 exe 后 PYTHONIOENCODING 环境变量不一定生效，必须在进程内改。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 HOST = "127.0.0.1"
 PORT = 8715
 MODEL_DIR = os.path.join(HERE, "models", "opus-mt-zh-en-ov")

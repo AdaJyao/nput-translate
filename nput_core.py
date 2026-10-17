@@ -259,6 +259,24 @@ def service_pids():
     return pids
 
 
+def tray_running():
+    """托盘进程是否已在运行（避免每次最小化都再起一个）。
+    坑：查询语句自身的命令行里也含有 'tray.ps1' 字样，会被 Where-Object 匹配到，
+    导致永远返回 True（于是托盘永远不启动）。必须排除自己的 PID。"""
+    try:
+        ps = ("$me = $PID; "
+              "Get-CimInstance Win32_Process | "
+              "Where-Object { $_.Name -eq 'powershell.exe' -and $_.ProcessId -ne $me "
+              "-and $_.CommandLine -like '*tray.ps1*' } | "
+              "Select-Object -First 1 -ExpandProperty ProcessId")
+        out = subprocess.run(["powershell", "-NoProfile", "-Command", ps],
+                             capture_output=True, text=True, timeout=20,
+                             encoding="utf-8", errors="replace").stdout.strip()
+        return bool(out)
+    except Exception:
+        return False
+
+
 def is_service_running():
     """服务是否在运行（HTTP 优先，退回 TCP）。"""
     return http_alive() or is_service_up()
@@ -278,6 +296,11 @@ def start_service():
         env.setdefault("HF_HOME", os.path.join(APP_DIR, ".hf-cache"))
         env.setdefault("HOME", env.get("USERPROFILE", APP_DIR))
         env["OPENVINO_DISABLE_TELEMETRY"] = "1"
+        # 关键：服务是控制台程序，输出被重定向到 service.log。
+        # 中文 Windows 下 Python 默认按 GBK 写，GUI 按 UTF-8 读 → 日志全是乱码。
+        # 强制子进程用 UTF-8 输出。
+        env["PYTHONIOENCODING"] = "utf-8"
+        env["PYTHONUTF8"] = "1"
         env.pop("HF_ENDPOINT", None)
         logf = open(os.path.join(APP_DIR, "service.log"), "a", encoding="utf-8")
         subprocess.Popen(cmd, cwd=APP_DIR, env=env,

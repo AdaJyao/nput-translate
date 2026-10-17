@@ -106,6 +106,44 @@ RuntimeError: NOT_FOUND: "...\source.spm": No such file or directory Error #2
 从命令行启动 GUI/服务（长驻进程）时，若不重定向输出，父命令会一直等管道 EOF。
 测试时务必 `-RedirectStandardOutput` / `-RedirectStandardError`。
 
+### 坑 7：服务日志中文乱码（编码不一致）
+
+服务是控制台程序，stdout/stderr 被重定向到 `service.log`。中文 Windows 下
+Python 默认按 **GBK** 写，而 GUI 按 **UTF-8** 读 → 日志里全是 `锛坘iss-translator锛`。
+
+注意：**打包成 exe 后 `PYTHONIOENCODING` 环境变量不一定生效**，必须在服务进程内强制：
+
+```python
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+```
+
+### 坑 8：托盘进程检测会匹配到自己
+
+用 PowerShell 查「tray.ps1 是否已在运行」时，查询语句自身的命令行里就含
+`tray.ps1` 字样，`Where-Object { $_.CommandLine -like '*tray.ps1*' }` 会匹配到自己，
+导致**永远返回「已在运行」→ 托盘永远不启动**。必须排除自身 PID：
+
+```powershell
+$me = $PID
+... Where-Object { $_.ProcessId -ne $me -and $_.CommandLine -like '*tray.ps1*' }
+```
+
+### 坑 9：Win11 把新托盘图标藏进溢出区
+
+`NotifyIcon.Visible = true` 确实创建了图标，但 Windows 11 默认把它收进任务栏的
+「^」展开区，用户会以为没启动。无法用 API 强制常显，只能在首次驻留时弹气泡提示，
+引导用户去溢出区找并拖到任务栏。
+
+### 坑 10：托盘「打开界面」会开出第二个窗口
+
+界面隐藏到托盘后进程仍在，托盘再 `Start-Process` 就会开第二个实例。
+解法是单实例：GUI 监听 `127.0.0.1:8717`，托盘先发 `show` 唤醒已有窗口，
+连不上才启动新进程；GUI 启动时也先探测这个端口，已在运行就唤醒并退出。
+
 ## 打包后可用的诊断端点
 
 服务起来后用浏览器或 curl 访问：

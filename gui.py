@@ -9,6 +9,7 @@ NPU 翻译 —— 图形界面（CustomTkinter，现代化深/浅色自适应）
 """
 import json
 import os
+import socket
 import subprocess
 import sys
 import threading
@@ -39,6 +40,10 @@ F_MONO = ("Consolas", 12)
 
 PAD = 16
 
+# 单实例唤起端口：第一个 GUI 实例监听它，再次启动 GUI 或点托盘「打开界面」时
+# 通过它把已有窗口叫出来，而不是再开一个进程。
+SHOW_PORT = 8717
+
 
 class UiQueue:
     """线程安全 UI 更新队列：后台线程只入队，主线程定时 drain。"""
@@ -68,10 +73,13 @@ class App(ctk.CTk):
         self.uiq = UiQueue()
         self._busy = False
         self._svc_up = False
+        # _destroyed: 窗口已真正销毁（决定后台循环是否继续）
+        # 注意不要用「隐藏」来表示它 —— 隐藏到托盘时唤起监听与状态轮询必须继续活着
+        self._destroyed = False
 
         self.title("NPU 翻译")
-        self.geometry("960x720")
-        self.minsize(880, 640)
+        self.geometry("980x860")
+        self.minsize(900, 680)
 
         try:
             icon = os.path.join(core.APP_DIR, "app.ico")
@@ -221,7 +229,11 @@ class App(ctk.CTk):
 
     # ------------------------------------------------------------ 服务页
     def _build_service(self, f):
-        card = ctk.CTkFrame(f, corner_radius=10)
+        # 用可滚动容器：窗口较小时（高 DPI / 小屏）内容不会被裁掉
+        wrap = ctk.CTkScrollableFrame(f, fg_color="transparent")
+        wrap.pack(fill="both", expand=True)
+
+        card = ctk.CTkFrame(wrap, corner_radius=10)
         card.pack(fill="x", pady=(8, 12))
 
         self.svc_state = ctk.CTkLabel(card, text="● 未运行", font=F_TITLE,
@@ -238,7 +250,7 @@ class App(ctk.CTk):
             v.grid(row=i, column=1, sticky="w", pady=2)
             self.svc_rows[key] = v
 
-        bar = ctk.CTkFrame(f, fg_color="transparent")
+        bar = ctk.CTkFrame(wrap, fg_color="transparent")
         bar.pack(fill="x", pady=(0, 10))
         ctk.CTkButton(bar, text="启动服务", width=110, height=36, font=F_BODY,
                       command=lambda: self._start_service()).pack(side="left")
@@ -252,9 +264,9 @@ class App(ctk.CTk):
                       fg_color="#555555", hover_color="#666666",
                       command=self._refresh_status).pack(side="left", padx=8)
 
-        ctk.CTkLabel(f, text="服务日志（末尾）", font=F_H).pack(anchor="w", pady=(6, 4))
-        self.logbox = ctk.CTkTextbox(f, font=("Consolas", 11), height=200)
-        self.logbox.pack(fill="both", expand=True)
+        ctk.CTkLabel(wrap, text="服务日志（末尾）", font=F_H).pack(anchor="w", pady=(6, 4))
+        self.logbox = ctk.CTkTextbox(wrap, font=("Consolas", 11), height=220)
+        self.logbox.pack(fill="x", pady=(0, 4))
         self.logbox.configure(state="disabled")
 
     def _start_service(self, then_translate=None):
@@ -601,31 +613,29 @@ class App(ctk.CTk):
             self._start_service()
 
     def _pump_loop(self):
-        if not getattr(self, "_alive", True):
+        if self._destroyed:
             return
         self.uiq.pump()
         self.after(120, self._pump_loop)
 
     def _periodic(self):
-        if not getattr(self, "_alive", True):
+        if self._destroyed:
             return
         self._refresh_status()
         self.after(5000, self._periodic)
 
     def _on_close(self):
-        # 标记已退出，避免 after 回调在窗口销毁后继续触发
-        # （否则日志里会刷 "invalid command name ..." 噪音）
-        self._alive = False
-        # 「后台服务」开着 → 服务与界面生命周期解耦，关界面不动服务
-        # 关着 → 退出时一并停服务，不留后台进程
-        bg = bool(self.cfg.get("background_service", True))
+        # 隐藏到托盘：窗口不可见，但进程、唤起监听、状态轮询都继续活着
         if self.cfg.get("minimize_to_tray", True):
             self.withdraw()
             self._ensure_tray()
-        else:
-            if not bg:
-                self._stop_service_on_exit()
-            self.destroy()
+            return
+
+        # 真退出
+        self._destroyed = True
+        if not bool(self.cfg.get("background_service", True)):
+            self._stop_service_on_exit()
+        self.destroy()
 
     def _stop_service_on_exit(self):
         """退出前停服务（不阻塞界面关闭）。"""
@@ -645,6 +655,11 @@ class App(ctk.CTk):
                 return
             ps1 = os.path.join(core.APP_DIR, "tray.ps1")
             if not os.path.exists(ps1):
+                print("[托盘] 找不到 tray.ps1")
+                return
+            # 已经在跑就别再起一个，否则托盘区会出现多个图标
+            if core.tray_running():
+                self._tray_started = True
                 return
             subprocess.Popen(
                 ["powershell", "-NoProfile", "-WindowStyle", "Hidden",
@@ -654,9 +669,80 @@ class App(ctk.CTk):
         except Exception as e:
             print("[托盘]", repr(e))
 
+    # ------------------------------------------------------------ 单实例
+    def try_signal_existing(self, timeout=0.6):
+        """如果已有实例在监听唤起端口，通知它显示窗口。返回 True 表示已存在。"""
+        try:
+            s = socket.create_connection(("127.0.0.1", SHOW_PORT), timeout=timeout)
+            try:
+                s.sendall(b"show\n")
+            finally:
+                s.close()
+            return True
+        except Exception:
+            return False
+
+    def start_show_listener(self):
+        """监听唤起端口，收到 show 就把窗口叫出来。"""
+        threading.Thread(target=self._show_listener, daemon=True).start()
+
+    def _show_listener(self):
+        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            srv.bind(("127.0.0.1", SHOW_PORT))
+            srv.listen(4)
+            srv.settimeout(1.0)
+        except Exception as e:
+            print("[唤起] 监听失败:", repr(e))
+            try:
+                srv.close()
+            except Exception:
+                pass
+            return
+        while not self._destroyed:
+            try:
+                conn, _ = srv.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            try:
+                data = conn.recv(64)
+                if b"show" in data:
+                    self.uiq.post(self.show_window)
+            except Exception:
+                pass
+            finally:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+        try:
+            srv.close()
+        except Exception:
+            pass
+
+    def show_window(self):
+        """把窗口从托盘/最小化状态叫回前台。"""
+        try:
+            self.deiconify()
+            self.lift()
+            self.focus_force()
+            self.attributes("-topmost", True)
+            self.after(300, lambda: self.attributes("-topmost", False))
+        except Exception as e:
+            print("[唤起]", repr(e))
+
 
 def main():
+    # 单实例：若已有界面在跑（可能已隐藏到托盘），把它叫出来就退出，
+    # 避免「托盘点打开界面」变成开第二个窗口。
     app = App()
+    if app.try_signal_existing():
+        app.destroy()
+        return
+    app.start_show_listener()
     app.after(1000, app._periodic)
     app.mainloop()
 
