@@ -1,0 +1,35 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# ---- 模型与构建产物（体积大，不入库）----
+models/
+dist/
+build/
+*.bin
+*.xml
+*.onnx
+
+# ---- 运行期缓存 ----
+.hf-cache/
+torchinductor_*/
+
+# ---- 运行/调试日志 ----
+*.log
+*.log.err
+service.pid
+
+# ---- 用户本地设置 ----
+config.json
+
+# ---- 系统 ----
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# 临时/调试脚本
+_*

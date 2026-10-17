@@ -1,0 +1,15 @@
+{
+  "device": "NPU",
+  "host": "127.0.0.1",
+  "port": 8715,
+  "http_port": 8716,
+  "model_dir": "models\\opus-mt-zh-en-ov",
+  "enc_seq": 64,
+  "dec_seq": 64,
+  "max_new_tokens": 96,
+  "autostart": false,
+  "background_service": true,
+  "minimize_to_tray": true,
+  "autostart_service": true,
+  "log_level": "INFO"
+}
