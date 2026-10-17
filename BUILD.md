@@ -156,6 +156,25 @@ GUI 本身没有控制台。任何控制台子进程（`powershell`、`python.ex
 
 代码里统一走 `nput_core.run_hidden()` / `nput_core.popen_hidden()`。
 
+## 安装包体积构成（为什么可以很小）
+
+安装包**不内置模型**，只带推理框架，所以从 506 MB 降到 **103 MB**。
+
+| 组成 | 内置模型时 | 不内置时 | 说明 |
+|---|---|---|---|
+| 模型权重 | 428 MB（FP32） | **0** | 改为程序内下载 FP16 包（197 MB） |
+| 推理依赖 | 371 MB | **274 MB** | 裁掉 GPU 插件、各语言前端、头文件 |
+| 界面依赖 | 81 MB | **81 MB** | Python + tkinter + CustomTkinter |
+| 合计（安装后） | 916 MB | **391 MB** | |
+
+三项瘦身手段：
+
+1. **不打包模型**：首次使用在「模型」页下载现成 IR 包并自动解压。
+2. **FP16**：`tools/compress_model.py` 把权重存成 FP16（425→212 MB）。
+   Intel NPU 本来就按 FP16 计算，实测译文与 FP32 一致。
+3. **裁剪依赖**：`--collect-all` 会把整个 openvino / transformers 打进来，
+   实际只用 NPU/CPU 插件 + IR 前端 + marian tokenizer，其余删掉省 97 MB。
+
 ## 生成安装程序（Inno Setup）
 
 ```powershell

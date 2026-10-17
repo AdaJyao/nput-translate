@@ -83,7 +83,7 @@ powershell -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File .\tray.p
 ### 生成安装程序
 
 ```powershell
-.\build_installer.ps1  # 产物 dist\NPU翻译-安装程序-1.1.0.exe
+.\build_installer.ps1  # 产物 dist\NPU翻译-安装程序-<版本>.exe（约 103 MB）
 ```
 
 安装程序用 Inno Setup 6 制作，特性：
@@ -93,7 +93,10 @@ powershell -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File .\tray.p
 - 自带卸载程序，卸载会清理配置与日志
 - 安装前自动结束正在运行的服务与界面，避免文件占用
 
-详见 [BUILD.md](BUILD.md)。
+### 为什么安装包只有 103 MB
+
+安装包**不内置模型**，只带推理框架；模型在程序「模型」页一键下载（197 MB FP16 包）。
+详细拆解见 [BUILD.md](BUILD.md)「安装包体积构成」。
 
 ## 服务协议
 

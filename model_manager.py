@@ -318,6 +318,10 @@ def download_zip_model(entry, on_line=None, on_progress=None, should_stop=None):
             on_line("下载完成，正在解压…")
 
         # 解压：兼容「zip 根目录就是文件」和「zip 里有一层同名目录」两种打包方式
+        # 先清空目标目录，避免与旧版本（如 FP32）文件混在一起
+        if os.path.isdir(target):
+            import shutil as _sh
+            _sh.rmtree(target, ignore_errors=True)
         with zipfile.ZipFile(zip_path) as zf:
             names = zf.namelist()
             root_prefix = ""
