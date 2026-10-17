@@ -552,42 +552,44 @@ class App(ctk.CTk):
         ttk_sep.pack(pady=2)
 
         ctk.CTkLabel(wrap, text="下载模型", font=F_H).pack(anchor="w", pady=(6, 2))
-        can = True
         try:
             import model_manager as mm
-            can = mm.can_convert()
         except Exception:
             mm = None
-        hint = ("下载后会自动转换为 OpenVINO 格式（每个约 445 MB，需联网，耗时几分钟）。"
-                if can else
-                "当前环境缺少转换工具（optimum-intel + torch），只能下载已导出的模型。")
+        self._mm = mm
+        hint = ("首次使用需要下载模型（推荐中→英，约 197 MB）。"
+                "下载后自动解压安装，可直接切换使用。")
         ctk.CTkLabel(wrap, text=hint, font=F_SMALL, text_color="#8a8a8a",
                      wraplength=640, justify="left").pack(anchor="w", pady=(0, 8))
 
+        self._dl_stop = False
         # 预设下拉 + 下载按钮
-        self._mm = mm
-        presets = [p["label"] for p in (mm.PRESETS if mm else [])]
+        entries = (mm.MANIFEST if mm else [])
+        labels = [f'{e["label"]} · 约 {e.get("size_mb", "?")} MB' for e in entries]
         row = ctk.CTkFrame(wrap, fg_color="transparent")
         row.pack(fill="x", pady=(0, 8))
-        self.opt_preset = ctk.CTkOptionMenu(row, values=presets or ["（无）"],
-                                            width=330, font=F_BODY)
+        self.opt_preset = ctk.CTkOptionMenu(row, values=labels or ["（无）"],
+                                            width=360, font=F_BODY)
         self.opt_preset.pack(side="left")
-        self.btn_download = ctk.CTkButton(row, text="下载并转换", width=130, height=34,
+        self.btn_download = ctk.CTkButton(row, text="下载并安装", width=130, height=34,
                                           font=F_BODY, command=self._download_model)
         self.btn_download.pack(side="left", padx=10)
         self.lbl_dl = ctk.CTkLabel(row, text="", font=F_SMALL)
         self.lbl_dl.pack(side="left", padx=6)
 
-        self.dl_log = ctk.CTkTextbox(wrap, font=("Consolas", 11), height=200)
+        self.pbar = ctk.CTkProgressBar(wrap, height=8)
+        self.pbar.pack(fill="x", pady=(0, 8))
+        self.pbar.set(0)
+
+        self.dl_log = ctk.CTkTextbox(wrap, font=("Consolas", 11), height=180)
         self.dl_log.pack(fill="x", pady=(4, 8))
         self.dl_log.configure(state="disabled")
 
-        ctk.CTkLabel(wrap, text="提示：模型目录放在程序目录的 models\\ 下，"
-                                "每个模型一个子目录，包含 openvino_*_model.xml/.bin 等文件。",
+        ctk.CTkLabel(wrap, text="模型可放在程序目录的 models\\ 下，每个模型一个子目录。"
+                                "也可以把别处已导出的模型目录整个拷进来，然后点「刷新」。",
                      font=F_SMALL, text_color="#8a8a8a", wraplength=640,
                      justify="left").pack(anchor="w", pady=(4, 8))
 
-        self._dl_stop = False
         self._refresh_models()
 
     def _open_models_dir(self):
@@ -681,25 +683,31 @@ class App(ctk.CTk):
         self.dl_log.see("end")
         self.dl_log.configure(state="disabled")
 
+    def _dl_progress(self, done, total):
+        if total:
+            self.pbar.set(min(1.0, done / total))
+
     def _download_model(self):
         if not self._mm:
             messagebox.showwarning("不可用", "模型管理模块未加载")
             return
-        if not self._mm.can_convert():
-            messagebox.showinfo("需要转换环境", self._mm.convert_hint())
-            return
         label = self.opt_preset.get()
-        preset = next((p for p in self._mm.PRESETS if p["label"] == label), None)
-        if not preset:
+        entry = None
+        for e in self._mm.MANIFEST:
+            if label.startswith(e["label"]):
+                entry = e
+                break
+        if not entry:
             return
-        if os.path.isdir(os.path.join(self._mm.MODELS_DIR, preset["dir"])) and \
-                self._mm.is_valid_model_dir(os.path.join(self._mm.MODELS_DIR, preset["dir"])):
-            if not messagebox.askyesno("已存在", "该模型目录已存在，重新下载会覆盖。继续？"):
+        target = os.path.join(self._mm.MODELS_DIR, entry["dir"])
+        if os.path.isdir(target) and self._mm.is_valid_model_dir(target):
+            if not messagebox.askyesno("已存在", "该模型已安装，重新下载会覆盖。继续？"):
                 return
 
         self._dl_stop = False
         self.btn_download.configure(state="disabled", text="下载中…")
-        self.lbl_dl.configure(text="开始…", text_color="#8a8a8a")
+        self.lbl_dl.configure(text="连接中…", text_color="#8a8a8a")
+        self.pbar.set(0)
         self.dl_log.configure(state="normal")
         self.dl_log.delete("1.0", "end")
         self.dl_log.configure(state="disabled")
@@ -707,15 +715,20 @@ class App(ctk.CTk):
         def _run():
             def on_line(s):
                 self.uiq.post(self._dl_log_write, s)
-            ok, msg = self._mm.download_and_convert(
-                preset, on_line=on_line, should_stop=lambda: self._dl_stop)
+            def on_prog(done, total):
+                self.uiq.post(self._dl_progress, done, total)
+            ok, msg = self._mm.download_zip_model(
+                entry, on_line=on_line, on_progress=on_prog,
+                should_stop=lambda: self._dl_stop)
             self.uiq.post(self._dl_done, ok, msg)
 
         threading.Thread(target=_run, daemon=True).start()
 
     def _dl_done(self, ok, msg):
-        self.btn_download.configure(state="normal", text="下载并转换")
+        self.btn_download.configure(state="normal", text="下载并安装")
         self.lbl_dl.configure(text=msg, text_color="#3ba55d" if ok else "#e05a5a")
+        if ok:
+            self.pbar.set(1.0)
         self._refresh_models()
 
     # ------------------------------------------------------------ 插件页

@@ -3,7 +3,7 @@
 ; 产物：dist\NPU翻译-安装程序-<版本>.exe
 
 #define MyAppName "NPU 翻译"
-#define MyAppVersion "1.1.0"
+#define MyAppVersion "1.2.0"
 #define MyAppPublisher "AdaJyao"
 #define MyAppURL "https://github.com/AdaJyao/npu-translate"
 #define MyAppExeName "NPU翻译.exe"
@@ -177,3 +177,4 @@ begin
     CleanupShortcuts();
   end;
 end;
+

@@ -174,24 +174,31 @@ if (Test-Path $svcBuilt) {
     Warn "没有服务产物，请先跑一次完整构建"
 }
 
-# 模型：只拷推理实际用到的文件（decoder_with_past 无缓存解码用不到，省 223 MB）
-$srcModel = Join-Path $Root 'models\opus-mt-zh-en-ov'
-$dstModel = Join-Path $Out 'models\opus-mt-zh-en-ov'
+# 模型：安装包**不再内置模型**（否则体积翻倍）。
+# 改为程序首次运行时在「模型」页一键下载（从 GitHub Release 附件取 FP16 IR 包）。
+# 这里只建空目录 + 说明文件。
+$dstModel = Join-Path $Out 'models'
+# 先清空，避免上一次构建残留的模型被打进新安装包
+if (Test-Path $dstModel) { Remove-Item $dstModel -Recurse -Force -ErrorAction SilentlyContinue }
 New-Item -ItemType Directory -Force -Path $dstModel | Out-Null
-$keep = @(
-    'openvino_encoder_model.xml', 'openvino_encoder_model.bin',
-    'openvino_decoder_model.xml', 'openvino_decoder_model.bin',
-    'config.json', 'generation_config.json',
-    'tokenizer_config.json', 'special_tokens_map.json',
-    'source.spm', 'target.spm', 'vocab.json', 'tokenizer.json'
-)
-$copied = 0
-foreach ($f in $keep) {
-    $s = Join-Path $srcModel $f
-    if (Test-Path $s) { Copy-Item $s (Join-Path $dstModel $f) -Force; $copied++ }
-}
-$mz = (Get-ChildItem $dstModel -File | Measure-Object Length -Sum).Sum
-Write-Host ("  模型文件: {0} 个, {1:N0} MB" -f $copied, ($mz / 1MB))
+$readme = @'
+# 模型目录
+
+安装包不内置模型。首次使用请打开程序 →「模型」页 → 点「下载并安装」。
+
+下载得到的是 OpenVINO IR（FP16），解压后放在本目录下，例如：
+
+    models\opus-mt-zh-en-ov\
+        openvino_encoder_model.xml/.bin
+        openvino_decoder_model.xml/.bin
+        source.spm, target.spm, vocab.json, config.json
+        meta.json          （语言方向，如 {"src":"zh","dst":"en"}）
+
+也可以把别处已导出的模型目录整个拷进来，然后点「刷新」。
+'@
+[System.IO.File]::WriteAllText((Join-Path $dstModel 'README.md'), $readme,
+    (New-Object System.Text.UTF8Encoding($false)))
+Write-Host "  models\ 目录已创建（不含模型，由程序内下载）"
 
 # 配置与文档
 Copy-Item $Icon $Out -Force -ErrorAction SilentlyContinue
@@ -249,6 +256,79 @@ $cfg.model_dir = 'models\opus-mt-zh-en-ov'
 ($cfg | ConvertTo-Json -Depth 6) | Set-Content $cfgPath -Encoding utf8
 Write-Host "  已写入 config.json"
 
+# ------------------------------------------------------------------ 裁剪
+# PyInstaller 的 --collect-all 会把整个 openvino / transformers 打进来，
+# 含大量运行时用不到的东西。这里做无损裁剪（不删任何实际用到的文件）。
+Step "裁剪无用依赖"
+
+$svcInt = Join-Path $Out '服务\_internal'
+if (Test-Path $svcInt) {
+    $before = (Get-ChildItem $svcInt -Recurse -File -EA SilentlyContinue |
+               Measure-Object Length -Sum).Sum
+
+    # 1) OpenVINO：只保留 NPU / CPU / IR 前端
+    #    删掉 GPU 插件、各语言前端（ONNX/TF/PyTorch/Paddle/GGUF/TFLite/JAX）、
+    #    auto/hetero/batch 调度插件 —— 我们固定用 NPU 或 CPU 读 IR 模型。
+    $ovLibs = Join-Path $svcInt 'openvino\libs'
+    if (Test-Path $ovLibs) {
+        $drop = @(
+            'openvino_intel_gpu_plugin.dll',
+            'openvino_onnx_frontend.dll',
+            'openvino_tensorflow_frontend.dll',
+            'openvino_tensorflow_lite_frontend.dll',
+            'openvino_pytorch_frontend.dll',
+            'openvino_paddle_frontend.dll',
+            'openvino_gguf_frontend.dll',
+            'openvino_jax_frontend.dll',
+            'openvino_auto_plugin.dll',
+            'openvino_auto_batch_plugin.dll',
+            'openvino_hetero_plugin.dll',
+            'openvino_c.dll'
+        )
+        foreach ($f in $drop) {
+            $p = Join-Path $ovLibs $f
+            if (Test-Path $p) { Remove-Item $p -Force -EA SilentlyContinue }
+        }
+        # 头文件是给开发用的，运行时不需要
+        foreach ($d in @('include', 'cmake', 'tools')) {
+            $p = Join-Path (Join-Path $svcInt 'openvino') $d
+            if (Test-Path $p) { Remove-Item $p -Recurse -Force -EA SilentlyContinue }
+        }
+    }
+
+    # 2) transformers：只保留 auto + marian（我们只用 MarianMT 的 tokenizer）
+    $tfModels = Join-Path $svcInt 'transformers\models'
+    if (Test-Path $tfModels) {
+        foreach ($d in (Get-ChildItem $tfModels -Directory -EA SilentlyContinue)) {
+            if ($d.Name -notin @('auto', 'marian')) {
+                Remove-Item $d.FullName -Recurse -Force -EA SilentlyContinue
+            }
+        }
+        foreach ($f in (Get-ChildItem $tfModels -File -EA SilentlyContinue)) {
+            if ($f.Name -ne '__init__.py') { Remove-Item $f.FullName -Force -EA SilentlyContinue }
+        }
+    }
+
+    # 3) 清掉所有 __pycache__
+    Get-ChildItem $svcInt -Recurse -Directory -Filter '__pycache__' -EA SilentlyContinue |
+        Remove-Item -Recurse -Force -EA SilentlyContinue
+
+    $after = (Get-ChildItem $svcInt -Recurse -File -EA SilentlyContinue |
+              Measure-Object Length -Sum).Sum
+    Write-Host ("  服务依赖 {0:N0} MB → {1:N0} MB（省 {2:N0} MB）" -f `
+        ($before / 1MB), ($after / 1MB), (($before - $after) / 1MB))
+} else {
+    Write-Host "  跳过（本次未构建服务，保持已组装内容）"
+}
+
+# 界面侧同样清 __pycache__
+$guiInt = Join-Path $Out '_internal'
+if (Test-Path $guiInt) {
+    Get-ChildItem $guiInt -Recurse -Directory -Filter '__pycache__' -EA SilentlyContinue |
+        Remove-Item -Recurse -Force -EA SilentlyContinue
+}
+
+# ------------------------------------------------------------------ 汇总
 Step "完成"
 Write-Host "输出目录: $Out" -ForegroundColor Green
 if (Test-Path $Out) {

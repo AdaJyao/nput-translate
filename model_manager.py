@@ -29,14 +29,31 @@ import nput_core as core
 APP_DIR = core.APP_DIR
 MODELS_DIR = os.path.join(APP_DIR, "models")
 
-# 内置可选模型：都来自 HuggingFace 的 MarianMT，体积小、质量够用
+# 内置可下载模型清单。
+# 安装包不再内置模型（否则体积翻倍），改为首次使用时从这里下载现成的 OpenVINO IR 包。
+# url 指向 GitHub Release 上的附件（公开仓库，无需登录）。
+_RELEASE_BASE = "https://github.com/AdaJyao/nput-translate/releases/download/v1.2.0"
+
+MANIFEST = [
+    {
+        "id": "opus-mt-zh-en",
+        "dir": "opus-mt-zh-en-ov",
+        "label": "中 → 英（opus-mt-zh-en）",
+        "src": "zh", "dst": "en",
+        "note": "推荐，FP16 约 212 MB",
+        "url": _RELEASE_BASE + "/opus-mt-zh-en-ov-fp16.zip",
+        "size_mb": 197,
+    },
+]
+
+# 兼容旧名字（源码环境下仍可用 optimum-cli 自行导出）
 PRESETS = [
     {
         "id": "Helsinki-NLP/opus-mt-zh-en",
         "dir": "opus-mt-zh-en-ov",
         "label": "中 → 英（opus-mt-zh-en）",
         "src": "zh", "dst": "en",
-        "note": "默认模型，约 445 MB",
+        "note": "默认模型，约 445 MB（FP32）",
     },
     {
         "id": "Helsinki-NLP/opus-mt-en-zh",
@@ -241,6 +258,114 @@ def download_and_convert(preset, on_line=None, should_stop=None):
             pass
 
     return True, f"完成：{preset['label']}"
+
+
+def manifest_entry(dirname):
+    for m in MANIFEST:
+        if m["dir"] == dirname:
+            return m
+    return None
+
+
+def download_zip_model(entry, on_line=None, on_progress=None, should_stop=None):
+    """从 URL 下载现成的 OpenVINO IR 压缩包并解压到 models/<dir>。
+
+    on_line(str)                      每行日志
+    on_progress(downloaded, total)    下载进度（字节）
+    should_stop()                     返回 True 时中止
+    返回 (ok, message)
+    """
+    import tempfile
+    import urllib.request
+    import zipfile
+
+    url = entry.get("url")
+    if not url:
+        return False, "该模型没有下载地址"
+
+    target = os.path.join(MODELS_DIR, entry["dir"])
+    os.makedirs(MODELS_DIR, exist_ok=True)
+
+    if on_line:
+        on_line("下载地址: " + url)
+
+    tmpdir = tempfile.mkdtemp(prefix="nput-model-")
+    zip_path = os.path.join(tmpdir, "model.zip")
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "NPUTranslate/1.1"})
+        with urllib.request.urlopen(req, timeout=60) as resp, open(zip_path, "wb") as fh:
+            total = int(resp.headers.get("Content-Length") or 0)
+            done = 0
+            last_pct = -1
+            while True:
+                if should_stop and should_stop():
+                    return False, "已取消"
+                chunk = resp.read(256 * 1024)
+                if not chunk:
+                    break
+                fh.write(chunk)
+                done += len(chunk)
+                if on_progress:
+                    on_progress(done, total)
+                if total:
+                    pct = done * 100 // total
+                    if pct != last_pct and pct % 5 == 0:
+                        last_pct = pct
+                        if on_line:
+                            on_line("已下载 %d%% (%.0f/%.0f MB)" %
+                                    (pct, done / 1048576, total / 1048576))
+        if on_line:
+            on_line("下载完成，正在解压…")
+
+        # 解压：兼容「zip 根目录就是文件」和「zip 里有一层同名目录」两种打包方式
+        with zipfile.ZipFile(zip_path) as zf:
+            names = zf.namelist()
+            root_prefix = ""
+            top = {n.split("/")[0] for n in names if n.strip()}
+            if len(top) == 1:
+                only = next(iter(top))
+                if any(n.startswith(only + "/") for n in names):
+                    root_prefix = only + "/"
+            os.makedirs(target, exist_ok=True)
+            for n in names:
+                if n.endswith("/"):
+                    continue
+                rel = n[len(root_prefix):] if root_prefix and n.startswith(root_prefix) else n
+                if not rel:
+                    continue
+                dest = os.path.join(target, rel.replace("/", os.sep))
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                with zf.open(n) as src, open(dest, "wb") as dst:
+                    shutil_copy(src, dst)
+        if on_line:
+            on_line("解压完成")
+    except Exception as e:
+        return False, "下载失败: %s: %s" % (type(e).__name__, e)
+    finally:
+        try:
+            import shutil as _sh
+            _sh.rmtree(tmpdir, ignore_errors=True)
+        except Exception:
+            pass
+
+    if not is_valid_model_dir(target):
+        return False, "下载包内容不完整（缺少 openvino_*_model.xml/.bin）"
+
+    # 补 meta.json（语言方向）
+    if not os.path.exists(os.path.join(target, "meta.json")):
+        write_meta(target, {"src": entry["src"], "dst": entry["dst"],
+                            "label": entry["label"]})
+    if on_line:
+        on_line("安装完成: " + target)
+    return True, "完成：%s" % entry["label"]
+
+
+def shutil_copy(src, dst):
+    while True:
+        buf = src.read(1024 * 1024)
+        if not buf:
+            break
+        dst.write(buf)
 
 
 def set_active(model_path):

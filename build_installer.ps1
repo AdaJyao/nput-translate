@@ -17,8 +17,11 @@ if (-not $Iscc) {
 if (-not (Test-Path (Join-Path $Src 'NPU翻译.exe'))) {
     throw "找不到 dist\NPU翻译\NPU翻译.exe，请先运行 .\build.ps1"
 }
-if (-not (Test-Path (Join-Path $Src 'models\opus-mt-zh-en-ov\openvino_encoder_model.xml'))) {
-    throw "dist 里没有模型文件，安装包会不可用。请先运行 .\build.ps1"
+# 安装包不内置模型（体积原因），模型由程序内「模型」页下载。
+# 若发现 dist 里残留了模型，提示一下（正常构建会自动清空 models\）。
+$stale = Join-Path $Src 'models\opus-mt-zh-en-ov'
+if (Test-Path $stale) {
+    Write-Host "  注意：dist 里仍有旧模型，会被打进安装包。建议先重跑 .\build.ps1" -ForegroundColor Yellow
 }
 
 # 安装器会覆盖目标程序，先停掉正在运行的实例
