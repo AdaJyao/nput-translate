@@ -29,19 +29,16 @@ PrivilegesRequired=lowest
 ; 体积大，用最高压缩
 Compression=lzma2/max
 SolidCompression=yes
-; 注意：不要开 LZMAUseSeparateProcess —— 它会额外派生一个自身进程做压缩解压，
-; 在受限环境里会导致安装器启动即退出（Inno 退出码 1）。
+; 不要开 LZMAUseSeparateProcess —— 会额外派生进程，受限环境下会导致安装器启动失败
 
 WizardStyle=modern
 SetupIconFile=app.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
 LicenseFile=LICENSE
-; 关闭正在运行的实例再覆盖文件。
-; 不用 Inno 的 Restart Manager（CloseApplications），改用 [Code] 里的 taskkill，
-; 因为本程序有两个进程（界面 + 服务），Restart Manager 处理不了服务，且部分环境会报致命错误。
+; 不用 Restart Manager：本程序有界面+服务两个进程，且部分环境会报致命错误。
+; 改为 [Code] 里 taskkill。
 CloseApplications=no
 RestartApplications=no
-; 允许用户改安装目录（默认就允许，这里显式声明）
 DirExistsWarning=auto
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
@@ -62,19 +59,6 @@ Name: "autostart"; Description: "开机自动启动翻译服务（后台常驻�
 ; 整个运行目录（界面 + 服务 + 模型 + 脚本）
 Source: "{#SrcDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
-[Icons]
-Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
-Name: "{group}\打开模型目录"; Filename: "{app}\models"
-Name: "{group}\卸载 {#MyAppName}"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
-
-[Registry]
-; 只在勾选时写开机自启；卸载时自动清除
-Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; \
-    ValueType: string; ValueName: "NPUTranslate"; \
-    ValueData: """{app}\启动服务.bat"""; \
-    Flags: uninsdeletevalue; Tasks: autostart
-
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "立即启动 {#MyAppName}"; \
     Flags: nowait postinstall skipifsilent
@@ -84,7 +68,11 @@ Filename: "{app}\{#MyAppExeName}"; Description: "立即启动 {#MyAppName}"; \
 Type: filesandordirs; Name: "{app}"
 
 [Code]
-{ 安装/卸载前先结束正在运行的实例，避免文件占用导致覆盖失败 }
+const
+  RunKey = 'Software\Microsoft\Windows\CurrentVersion\Run';
+  RunValue = 'NPUTranslate';
+
+{ 安装/卸载前结束正在运行的实例，避免文件占用 }
 procedure KillRunning();
 var
   ResultCode: Integer;
@@ -93,14 +81,99 @@ begin
   Exec('taskkill.exe', '/IM "NPU翻译-服务.exe" /F /T', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
 end;
 
+{ 用 WScript.Shell 建快捷方式；失败只记录，不中断安装 }
+procedure TryCreateShortcut(const LnkPath, Target, WorkDir, Desc: String);
+var
+  Wsh: Variant;
+  Lnk: Variant;
+begin
+  try
+    ForceDirectories(ExtractFileDir(LnkPath));
+    Wsh := CreateOleObject('WScript.Shell');
+    Lnk := Wsh.CreateShortcut(LnkPath);
+    Lnk.TargetPath := Target;
+    Lnk.WorkingDirectory := WorkDir;
+    if Desc <> '' then
+      Lnk.Description := Desc;
+    Lnk.Save;
+    Lnk := Unassigned;
+    Wsh := Unassigned;
+  except
+    { 受限环境（无 AppData 写权限）下忽略，安装继续 }
+  end;
+end;
+
+{ 建立开始菜单 + 桌面快捷方式 }
+procedure CreateShortcuts();
+var
+  Exe, WorkDir, StartMenuDir, Lnk: String;
+begin
+  Exe := ExpandConstant('{app}\{#MyAppExeName}');
+  WorkDir := ExpandConstant('{app}');
+
+  StartMenuDir := ExpandConstant('{userprograms}\{#MyAppName}');
+  Lnk := StartMenuDir + '\{#MyAppName}.lnk';
+  TryCreateShortcut(Lnk, Exe, WorkDir, '{#MyAppName}');
+  TryCreateShortcut(StartMenuDir + '\打开模型目录.lnk',
+    ExpandConstant('{app}\models'), WorkDir, '模型目录');
+  TryCreateShortcut(StartMenuDir + '\卸载 {#MyAppName}.lnk',
+    ExpandConstant('{uninstallexe}'), WorkDir, '卸载');
+
+  if WizardIsTaskSelected('desktopicon') then
+    TryCreateShortcut(ExpandConstant('{userdesktop}\{#MyAppName}.lnk'),
+      Exe, WorkDir, '{#MyAppName}');
+end;
+
+{ 开机自启：写 HKCU Run；失败只记录 }
+procedure TrySetAutostart();
+var
+  Cmd: String;
+begin
+  if not WizardIsTaskSelected('autostart') then
+    exit;
+  Cmd := '"' + ExpandConstant('{app}\启动服务.bat') + '"';
+  try
+    RegWriteStringValue(HKEY_CURRENT_USER, RunKey, RunValue, Cmd);
+  except
+  end;
+end;
+
+{ 清理快捷方式与自启项（卸载时） }
+procedure CleanupShortcuts();
+var
+  StartMenuDir, DesktopLnk: String;
+begin
+  StartMenuDir := ExpandConstant('{userprograms}\{#MyAppName}');
+  DelTree(StartMenuDir, True, True, True);
+  DesktopLnk := ExpandConstant('{userdesktop}\{#MyAppName}.lnk');
+  if FileExists(DesktopLnk) then
+    DeleteFile(DesktopLnk);
+  try
+    RegDeleteValue(HKEY_CURRENT_USER, RunKey, RunValue);
+  except
+  end;
+end;
+
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
   KillRunning();
   Result := '';
 end;
 
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssPostInstall then
+  begin
+    CreateShortcuts();
+    TrySetAutostart();
+  end;
+end;
+
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 begin
   if CurUninstallStep = usUninstall then
+  begin
     KillRunning();
+    CleanupShortcuts();
+  end;
 end;
