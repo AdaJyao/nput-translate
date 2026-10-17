@@ -149,12 +149,17 @@ namespace NpuTranslateSetup
         private readonly ProgressBar _bar = new ProgressBar();
         private readonly Label _status = new Label();
         private readonly TextBox _log = new TextBox();
+        private readonly Label _hint = new Label();
         private volatile bool _working;
+        private readonly string _prefillDir;
 
         private static readonly string AppName = "NPU 翻译";
 
-        public SetupForm()
+        public SetupForm() : this(null) { }
+
+        public SetupForm(string prefillDir)
         {
+            _prefillDir = prefillDir;
             Text = AppName + " 安装程序";
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = false;
@@ -174,7 +179,7 @@ namespace NpuTranslateSetup
 
             var sub = new Label
             {
-                Text = "选择安装位置后点击「开始安装」。安装包已内置 FP16 翻译模型，装完即可使用。",
+                Text = "选择安装位置后点击「开始安装」。安装包不含模型，装完在「模型」页一键下载即可使用。",
                 ForeColor = Color.DimGray,
                 Location = new Point(26, 58),
                 AutoSize = true
@@ -185,7 +190,7 @@ namespace NpuTranslateSetup
 
             _path.Location = new Point(110, 97);
             _path.Width = 390;
-            _path.Text = DefaultDir();
+            _path.Text = string.IsNullOrWhiteSpace(_prefillDir) ? DefaultDir() : _prefillDir;
             Controls.Add(_path);
 
             _browse.Text = "浏览…";
@@ -280,6 +285,45 @@ namespace NpuTranslateSetup
             if (percent >= 0) _bar.Value = Math.Min(100, Math.Max(0, percent));
         }
 
+        /// <summary>试写一个探针文件，判断目录是否可写。</summary>
+        private static bool TryProbeWrite(string dir, out string why)
+        {
+            why = "";
+            try
+            {
+                Directory.CreateDirectory(dir);
+                string probe = Path.Combine(dir, ".npu_write_test");
+                File.WriteAllText(probe, "ok");
+                File.Delete(probe);
+                return true;
+            }
+            catch (UnauthorizedAccessException ex) { why = "权限不足：" + ex.Message; return false; }
+            catch (Exception ex) { why = ex.Message; return false; }
+        }
+
+        /// <summary>以管理员身份重新启动自身，并把当前目录带过去。</summary>
+        private void RelaunchElevated(string dir)
+        {
+            try
+            {
+                var psi = new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = Assembly.GetExecutingAssembly().Location,
+                    Arguments = "--dir \"" + dir + "\"",
+                    UseShellExecute = true,
+                    Verb = "runas"
+                };
+                System.Diagnostics.Process.Start(psi);
+                Close();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this,
+                    "提权启动被取消或失败：\r\n" + ex.Message +
+                    "\r\n\r\n请右键点击安装程序，选择「以管理员身份运行」。",
+                    "无法提升权限", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
         private void OnInstall(object sender, EventArgs e)
         {
             if (_working) return;
@@ -289,17 +333,32 @@ namespace NpuTranslateSetup
                 MessageBox.Show(this, "请先选择安装目录。", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
-            try
+            // 先探测目标目录是否可写；不可写时（常见于 Program Files）提示提权
+            string why;
+            if (!TryProbeWrite(target, out why))
             {
-                Directory.CreateDirectory(target);
-                string probe = Path.Combine(target, ".npu_write_test");
-                File.WriteAllText(probe, "ok");
-                File.Delete(probe);
-            }
-            catch (Exception ex)
-            {
+                bool admin = false;
+                try
+                {
+                    var id = System.Security.Principal.WindowsIdentity.GetCurrent();
+                    var pri = new System.Security.Principal.WindowsPrincipal(id);
+                    admin = pri.IsInRole(System.Security.Principal.WindowsBuiltInRole.Administrator);
+                }
+                catch { }
+
+                if (!admin)
+                {
+                    var r = MessageBox.Show(this,
+                        "该目录需要管理员权限才能写入：\r\n" + target + "\r\n\r\n" + why +
+                        "\r\n\r\n是否以管理员身份重新启动安装程序？\r\n" +
+                        "（选「否」可改选普通目录，例如 D:\\NPU翻译）",
+                        "需要管理员权限", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+                    if (r == DialogResult.Yes) RelaunchElevated(target);
+                    return;
+                }
+
                 MessageBox.Show(this,
-                    "该目录无法写入：" + target + "\r\n\r\n" + ex.Message +
+                    "该目录无法写入：" + target + "\r\n\r\n" + why +
                     "\r\n\r\n请换一个目录（例如 D:\\NPU翻译）。",
                     "目录不可写", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 return;
@@ -610,7 +669,18 @@ namespace NpuTranslateSetup
                 return;
             }
 
-            Application.Run(new SetupForm());
+            // 提权重启后带过来的预填目录：--dir "D:\Program Files\npu_fanyi"
+            string prefill = null;
+            for (int i = 0; i < args.Length - 1; i++)
+            {
+                if (string.Equals(args[i], "--dir", StringComparison.OrdinalIgnoreCase))
+                {
+                    prefill = args[i + 1];
+                    break;
+                }
+            }
+
+            Application.Run(new SetupForm(prefill));
         }
     }
 
@@ -677,4 +747,6 @@ namespace NpuTranslateSetup
         }
     }
 }
+
+
 
