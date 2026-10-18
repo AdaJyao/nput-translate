@@ -144,26 +144,42 @@ http://127.0.0.1:8716/translate?text=今天天气真好&to=en
 安装包**只内置下载源清单**（`model_manager.py` 里的 `MANIFEST`），不含任何模型文件。
 在「模型」页选择模型与精度 → 点「下载并安装」→ 自动下载、解压、安装，并自动设为当前。
 
-### 模型命名
+### 可用模型（下载源）
 
 显示名一律用**原始精简模型名**，与 HuggingFace 上的名字一致：
 
-| 显示名 | 精度 | 目录 | 体积 |
+| 模型 | 语言方向 | 精度 | 体积 |
 |---|---|---|---|
-| `opus-mt-zh-en` | FP16 | `models\opus-mt-zh-en` | 约 212 MB |
-| `opus-mt-zh-en` | FP32 | `models\opus-mt-zh-en-fp32` | 约 425 MB |
+| `opus-mt-zh-en` | 中 → 英 | FP16 / FP32 | 197 / 395 MB |
+| `opus-mt-en-zh` | 英 → 中 | FP16 | 197 MB |
+| `opus-mt-ja-en` | 日 → 英 | FP16 | 189 MB |
+| `opus-mt-en-de` | 英 → 德 | FP16 | 184 MB |
+| `opus-mt-de-en` | 德 → 英 | FP16 | 183 MB |
+| `opus-mt-en-fr` | 英 → 法 | FP16 | 187 MB |
+| `opus-mt-en-ru` | 英 → 俄 | FP16 | 193 MB |
 
-语言方向（zh→en）由模型目录里的 `meta.json` 记录，服务启动时读取。
-只下载了 FP32 版也能直接跑 —— 服务会自动在 `models\` 下找第一个可用模型。
+模型装到 `models\<模型名>`（FP32 版为 `models\<模型名>-fp32`），
+不同模型可同时存在、随时切换。语言方向由目录里的 `meta.json` 记录，服务启动时读取。
+
+> 只装了某一个模型也能直接用 —— 服务会自动在 `models\` 下找第一个可用模型。
 
 ### 精度可选
 
 | 精度 | 说明 |
 |---|---|
 | **FP16**（推荐） | Intel NPU 原生按 FP16 计算，实测译文与 FP32 完全一致，体积减半 |
-| **FP32** | 原始精度，不做任何数值压缩 |
+| **FP32** | 原始精度，不做任何数值压缩（目前仅 `opus-mt-zh-en` 提供） |
 
 > INT8 量化（`tools/quantize_int8.py`）实测质量下降明显（长句输出空、丢句），暂不提供。
+
+### 新增模型
+
+```powershell
+# 1) 在 tools\build_models.ps1 的 $Models 里加一行（仓库名 / 精简名 / 源语言 / 目标语言）
+# 2) 导出 + 压 FP16 + 打 zip（产物在 dist\）
+.\tools\build_models.ps1
+# 3) 把 zip 传到 Release，并在 model_manager.py 的 MANIFEST 里加一条
+```
 
 ## 架构
 

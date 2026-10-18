@@ -67,7 +67,16 @@ ENC_SEQ = 64       # 源句固定长度（中文短句通常 < 30 token；实测
 DEC_SEQ = 64       # 解码固定长度（英文短句通常 < 40 token）
 ENC_SEQ_MAX = 128  # 超长句回退档位（见 _seq_tiers）
 DEC_SEQ_MAX = 128
-HIDDEN = 512       # d_model，固定不可动（打开成动态会 512 vs 1024 不匹配）
+HIDDEN = 512       # 默认 d_model（多数 opus-mt 是 512）；实际以模型 config.json 为准
+
+
+def hidden_size(model_dir=None):
+    """读模型真实的 d_model。不同 opus-mt 模型可能不同（512 / 1024），
+    写死会在 reshape 时报 512 vs 1024 不匹配。"""
+    try:
+        return int(_cfg(model_dir).get("d_model") or HIDDEN)
+    except Exception:
+        return HIDDEN
 MAX_NEW_TOKENS = 96
 
 
@@ -116,7 +125,7 @@ def load_static(model_dir, device, enc_seq=ENC_SEQ, dec_seq=DEC_SEQ):
     dec_m.reshape({
         "encoder_attention_mask": ov.PartialShape([1, enc_seq]),
         "input_ids": ov.PartialShape([1, dec_seq]),
-        "encoder_hidden_states": ov.PartialShape([1, enc_seq, HIDDEN]),
+        "encoder_hidden_states": ov.PartialShape([1, enc_seq, hidden_size(model_dir)]),
     })
 
     cfg = {"PERFORMANCE_HINT": "LATENCY"} if device == "NPU" else {}
@@ -241,7 +250,7 @@ def load_static_multi(model_dir, device, tiers=None):
         dec_m.reshape({
             "encoder_attention_mask": ov.PartialShape([1, enc_seq]),
             "input_ids": ov.PartialShape([1, dec_seq]),
-            "encoder_hidden_states": ov.PartialShape([1, enc_seq, HIDDEN]),
+            "encoder_hidden_states": ov.PartialShape([1, enc_seq, hidden_size(model_dir)]),
         })
         compiled[f"{enc_seq}x{dec_seq}"] = (
             core.compile_model(enc_m, device, cfg),
@@ -316,7 +325,7 @@ def load_dynamic(model_dir, device="CPU"):
     dec_m.reshape({
         "encoder_attention_mask": ov.PartialShape([-1, -1]),
         "input_ids": ov.PartialShape([-1, -1]),
-        "encoder_hidden_states": ov.PartialShape([-1, -1, HIDDEN]),
+        "encoder_hidden_states": ov.PartialShape([-1, -1, hidden_size(model_dir)]),
     })
     enc_c = core.compile_model(enc_m, device)
     dec_c = core.compile_model(dec_m, device)
@@ -379,3 +388,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

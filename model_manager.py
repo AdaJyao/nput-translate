@@ -34,29 +34,47 @@ MODELS_DIR = os.path.join(APP_DIR, "models")
 # 显示名一律用**原始精简模型名**（如 opus-mt-zh-en），不带 -ov / 中文说明等后缀。
 _RELEASE_BASE = "https://github.com/AdaJyao/nput-translate/releases/download/v1.2.0"
 
+
+def _entry(name, src, dst, precision="FP16", desc="", size=200, suffix="", fname=None):
+    """构造一条下载源记录。name 即精简原始模型名（同时用作安装目录名）。
+
+    fname 用于兼容早期已发布的附件名（那时的 zip 带 -ov 后缀）。
+    """
+    dirname = name + suffix
+    if fname is None:
+        fname = name + suffix + "-fp16.zip"
+    return {
+        "id": dirname,
+        "dir": dirname,
+        "label": name,
+        "model": name,
+        "precision": precision,
+        "precision_desc": desc,
+        "src": src, "dst": dst,
+        "url": _RELEASE_BASE + "/" + fname,
+        "size_mb": size,
+    }
+
+
 MANIFEST = [
-    {
-        "id": "opus-mt-zh-en",
-        "dir": "opus-mt-zh-en",
-        "label": "opus-mt-zh-en",
-        "model": "opus-mt-zh-en",
-        "precision": "FP16",
-        "precision_desc": "推荐：体积减半，NPU 原生按 FP16 计算，译文与 FP32 一致",
-        "src": "zh", "dst": "en",
-        "url": _RELEASE_BASE + "/opus-mt-zh-en-ov-fp16.zip",
-        "size_mb": 197,
-    },
-    {
-        "id": "opus-mt-zh-en-fp32",
-        "dir": "opus-mt-zh-en-fp32",
-        "label": "opus-mt-zh-en",
-        "model": "opus-mt-zh-en",
-        "precision": "FP32",
-        "precision_desc": "最高精度：不做任何数值压缩，体积最大",
-        "src": "zh", "dst": "en",
-        "url": _RELEASE_BASE + "/opus-mt-zh-en-ov-fp32.zip",
-        "size_mb": 395,
-    },
+    # 中 → 英（FP16 / FP32 两种精度）
+    # 这两个沿用早期已上传的附件名（opus-mt-zh-en-ov-*.zip）
+    _entry("opus-mt-zh-en", "zh", "en", "FP16",
+           "推荐：体积减半，NPU 原生按 FP16 计算，译文与 FP32 一致", 197,
+           fname="opus-mt-zh-en-ov-fp16.zip"),
+    _entry("opus-mt-zh-en", "zh", "en", "FP32",
+           "最高精度：不做任何数值压缩，体积最大", 395, suffix="-fp32",
+           fname="opus-mt-zh-en-ov-fp32.zip"),
+    # 英 → 中
+    _entry("opus-mt-en-zh", "en", "zh", "FP16", "英译中", 197),
+    # 日 → 英
+    _entry("opus-mt-ja-en", "ja", "en", "FP16", "日译英", 189),
+    # 英 ↔ 德
+    _entry("opus-mt-en-de", "en", "de", "FP16", "英译德", 184),
+    _entry("opus-mt-de-en", "de", "en", "FP16", "德译英", 183),
+    # 英 → 法 / 英 → 俄
+    _entry("opus-mt-en-fr", "en", "fr", "FP16", "英译法", 187),
+    _entry("opus-mt-en-ru", "en", "ru", "FP16", "英译俄", 193),
 ]
 
 # 当前清单里出现过的模型（用于界面「模型」下拉）
@@ -436,4 +454,5 @@ def delete_model(model_path):
         return True, "已删除"
     except Exception as e:
         return False, f"删除失败: {e}"
+
 
