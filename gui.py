@@ -151,7 +151,7 @@ class App(ctk.CTk):
 
     # ------------------------------------------------------------ 翻译页
     def _build_translate(self, f):
-        ctk.CTkLabel(f, text="原文（中文）", font=F_H).pack(anchor="w", pady=(8, 4))
+        ctk.CTkLabel(f, text="原文（自动识别语言）", font=F_H).pack(anchor="w", pady=(8, 4))
         self.src = ctk.CTkTextbox(f, font=F_BODY, height=150, wrap="word")
         self.src.pack(fill="x")
         self.src.insert("1.0", "今天天气真好，我们一起去公园散步吧。")
@@ -161,6 +161,10 @@ class App(ctk.CTk):
         self.btn_tr = ctk.CTkButton(bar, text="翻译", width=110, height=36,
                                     font=F_H, command=self._do_translate)
         self.btn_tr.pack(side="left")
+        ctk.CTkLabel(bar, text="译为", font=F_BODY).pack(side="left", padx=(12, 4))
+        self.opt_to = ctk.CTkOptionMenu(
+            bar, values=["en", "zh-CN", "de", "fr", "ru"], width=110, font=F_BODY)
+        self.opt_to.pack(side="left")
         ctk.CTkButton(bar, text="清空", width=80, height=36, font=F_BODY,
                       fg_color="#555555", hover_color="#666666",
                       command=self._clear).pack(side="left", padx=8)
@@ -173,7 +177,8 @@ class App(ctk.CTk):
         self.lbl_ms = ctk.CTkLabel(bar, text="", font=F_SMALL, text_color="#8a8a8a")
         self.lbl_ms.pack(side="right")
 
-        ctk.CTkLabel(f, text="译文（English）", font=F_H).pack(anchor="w", pady=(4, 4))
+        self.lbl_dst = ctk.CTkLabel(f, text="译文", font=F_H)
+        self.lbl_dst.pack(anchor="w", pady=(4, 4))
         self.dst = ctk.CTkTextbox(f, font=F_MONO, height=150, wrap="word")
         self.dst.pack(fill="both", expand=True)
 
@@ -210,15 +215,16 @@ class App(ctk.CTk):
 
         def _run():
             try:
-                r = core.translate(text)
+                r = core.translate(text, to=self.opt_to.get())
                 self.uiq.post(self._show_result, r.get("dst", ""),
-                              r.get("ms", 0), r.get("tier", ""), r.get("error"))
+                              r.get("ms", 0), r.get("tier", ""), r.get("error"),
+                              r.get("route", ""))
             except Exception as e:
                 self.uiq.post(self._show_result, "", 0, "",
                               f"{type(e).__name__}: {e}")
         threading.Thread(target=_run, daemon=True).start()
 
-    def _show_result(self, dst, ms, tier, err):
+    def _show_result(self, dst, ms, tier, err, route=""):
         self._busy = False
         self.btn_tr.configure(state="normal", text="翻译")
         if err:
@@ -226,7 +232,17 @@ class App(ctk.CTk):
             self.dst.insert("1.0", "翻译失败，请检查服务状态。")
         else:
             self.dst.insert("1.0", dst)
-            self.lbl_ms.configure(text=f"{ms} ms  ·  {tier}")
+            parts = [f"{ms} ms"]
+            if route:
+                parts.append(route)
+            if tier:
+                parts.append(str(tier))
+            self.lbl_ms.configure(text="  ·  ".join(parts))
+            try:
+                self.lbl_dst.configure(text="译文（%s）" % route.split("→")[-1]
+                                       if route else "译文")
+            except Exception:
+                pass
 
     # ------------------------------------------------------------ 服务页
     def _build_service(self, f):
@@ -419,6 +435,13 @@ class App(ctk.CTk):
         if self.cfg.get("minimize_to_tray", True):
             self.sw_tray.select()
 
+        # 自动选择模型：按文本语言挑模型，缺直达时用英文中转
+        self.sw_auto_route = row("自动选择模型",
+                                 lambda p: ctk.CTkSwitch(p, text="", width=50),
+                                 "按原文语言自动切换模型（缺直达时经英文中转）")
+        if self.cfg.get("auto_route", True):
+            self.sw_auto_route.select()
+
         bar = ctk.CTkFrame(wrap, fg_color="transparent")
         bar.pack(fill="x", pady=16)
         ctk.CTkButton(bar, text="保存设置", width=120, height=38, font=F_H,
@@ -443,6 +466,7 @@ class App(ctk.CTk):
                 "autostart": bool(self.sw_auto.get()),
                 "background_service": bool(self.sw_bg.get()),
                 "minimize_to_tray": bool(self.sw_tray.get()),
+                "auto_route": bool(self.sw_auto_route.get()),
             }
         except ValueError:
             return None
@@ -483,6 +507,10 @@ class App(ctk.CTk):
         else:
             self.sw_bg.deselect()
         self.sw_tray.select()
+        if d.get("auto_route", True):
+            self.sw_auto_route.select()
+        else:
+            self.sw_auto_route.deselect()
         self._apply_autostart(False)
         self.lbl_set.configure(text="已恢复默认", text_color="#3ba55d")
 
@@ -1014,3 +1042,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

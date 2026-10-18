@@ -146,10 +146,36 @@ def make_handler(server_ref):
                 self._send_json({"ok": False, "error": "missing 'text'"}, 400)
                 return
             to = body.get("to", "en")
+            import router as _router
+            src = _router.detect_lang(text)
+
+            # 自动路由：按文本语言挑模型（缺直达可经英文中转）
+            if _auto_enabled(server_ref):
+                try:
+                    dst, ms, tier, route = server_ref.translate_routed(text, to)
+                except RuntimeError as e:
+                    # 没有匹配的语言对：原样返回，不当作错误
+                    self._send_json(kiss_api.build_response_nobatch(
+                        text, text, kiss_api.lang_code(src)))
+                    return
+                except Exception as e:
+                    import traceback
+                    tb = traceback.format_exc()
+                    print("[HTTP] 翻译异常:\n" + tb, flush=True)
+                    self._send_json({"ok": False,
+                                     "error": f"{type(e).__name__}: {e}",
+                                     "_trace": tb[-1200:]}, 500)
+                    return
+                resp = kiss_api.build_response_nobatch(text, dst, kiss_api.lang_code(src))
+                resp["_ms"] = round(ms, 1)
+                resp["_tier"] = tier
+                resp["_route"] = route
+                self._send_json(resp)
+                return
+
+            # 手动模式：只用当前主模型，按它的语言方向判断
             src_dir, dst_dir = _model_dirs(server_ref)
-            src = kiss_api.detect_lang(text)
             if not kiss_api.should_translate(text, to, src_dir, dst_dir):
-                # 不支持的方向：原样返回，不报错
                 self._send_json(kiss_api.build_response_nobatch(
                     text, text, kiss_api.lang_code(src)))
                 return
@@ -185,13 +211,26 @@ def make_handler(server_ref):
                     pairs.append((t, kiss_api.lang_code(src)))
                     continue
                 try:
-                    dst, _, _ = server_ref.translate_http(t)
+                    import router as _router
+                    if _auto_enabled(server_ref):
+                        dst, _, _, _ = server_ref.translate_routed(t, to)
+                    else:
+                        dst, _, _ = server_ref.translate_http(t)
                     pairs.append((dst, kiss_api.lang_code(src)))
                 except Exception:
                     pairs.append((t, kiss_api.lang_code(src)))
             self._send_json(kiss_api.build_response_batch(pairs))
 
     return Handler
+
+
+def _auto_enabled(server_ref):
+    """是否启用自动模型路由（config.auto_route）。"""
+    try:
+        import nput_core as core
+        return bool(core.load_config().get("auto_route", True))
+    except Exception:
+        return True
 
 
 def _model_dirs(server_ref):
@@ -211,3 +250,4 @@ def start_http(server_ref, host, port):
         pass
     finally:
         srv.server_close()
+

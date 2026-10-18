@@ -116,6 +116,103 @@ class TranslateServer:
         if not self.compiled or self.tok is None:
             raise RuntimeError("模型未就绪")
 
+    # ---------------------------------------------------------- 模型池（自动路由用）
+    def _pool(self):
+        if not hasattr(self, "_models"):
+            self._models = {}          # path -> (compiled, tok)
+            self._model_lru = []       # 最近使用顺序
+            cfg = _cfg()
+            self._max_pool = max(1, int(cfg.get("auto_max_models", 2) or 2))
+            self._auto_route = bool(cfg.get("auto_route", True))
+        return self._models
+
+    def _scan_models(self):
+        """扫描 models\\ 下所有可用模型，返回 [{path, src, dst}]。"""
+        import model_manager as mm
+        out = []
+        for it in mm.list_installed():
+            out.append({"path": it["path"], "src": it["src"], "dst": it["dst"]})
+        # 当前加载的模型一定在列
+        if getattr(self, "model_dir", None) and self.compiled:
+            meta = getattr(self, "meta", {}) or {}
+            if not any(m["path"] == self.model_dir for m in out):
+                out.append({"path": self.model_dir,
+                            "src": meta.get("src", "zh"), "dst": meta.get("dst", "en")})
+        return out
+
+    def _ensure_model(self, path):
+        """按需加载模型（LRU 淘汰），返回 (compiled, tok)。"""
+        pool = self._pool()
+        if path in pool:
+            try:
+                self._model_lru.remove(path)
+            except ValueError:
+                pass
+            self._model_lru.append(path)
+            return pool[path]
+
+        # 当前已加载的就是它
+        if path == getattr(self, "model_dir", None) and self.compiled:
+            pool[path] = (self.compiled, self.tok)
+            self._model_lru.append(path)
+            return pool[path]
+
+        from translate import load_static_multi, _seq_tiers
+        cfg = _cfg()
+        base = (int(cfg.get("enc_seq", 64)), int(cfg.get("dec_seq", 64)))
+        tiers = [base] + [t for t in _seq_tiers() if t != base]
+        print(f"[路由] 加载模型 {os.path.basename(path)} ...", flush=True)
+        t0 = time.time()
+        compiled, tok = load_static_multi(path, self.device, tiers=tiers)
+        print(f"[路由] 模型就绪，耗时 {time.time()-t0:.2f}s", flush=True)
+        pool[path] = (compiled, tok)
+        self._model_lru.append(path)
+
+        # 超出容量就淘汰最久未用的（保留当前主模型）
+        while len(self._model_lru) > getattr(self, "_max_pool", 2):
+            victim = self._model_lru.pop(0)
+            if victim == getattr(self, "model_dir", None):
+                self._model_lru.append(victim)
+                break
+            pool.pop(victim, None)
+            print(f"[路由] 淘汰模型 {os.path.basename(victim)}（超出上限）", flush=True)
+        return pool[path]
+
+    def translate_routed(self, text, to):
+        """按文本语言自动选模型翻译。返回 (译文, 毫秒, 档位, 路由说明)。"""
+        from translate import translate_static, _pick_tier
+        import router
+        self._pool()
+
+        # 关闭自动路由时，只用当前主模型
+        if not getattr(self, "_auto_route", True):
+            out, ms, tier = self.translate_http(text)
+            return out, ms, tier, "手动模式"
+
+        metas = self._scan_models()
+        index = router.build_index(metas)
+        paths, desc = router.plan(index, text, to)
+        if not paths:
+            raise RuntimeError(desc)
+
+        out = text
+        total = 0.0
+        tier_last = None
+        for p in paths:
+            compiled, tok = self._ensure_model(p)
+            tier = _pick_tier(compiled, out, tok)
+            enc_c, dec_c = compiled[tier]
+            t0 = time.time()
+            with self._lock:
+                out, _ = translate_static(enc_c, dec_c, tok, out, model_dir=p)
+            total += (time.time() - t0) * 1000
+            tier_last = tier
+            if len(paths) > 1:
+                print(f"[路由] {desc} 中途: {os.path.basename(p)} -> {out}", flush=True)
+
+        self._nreq += 1
+        return out, round(total, 1), tier_last, desc
+
     def handle_text(self, text):
         from translate import translate_static, _pick_tier
         self._ensure_ready()
@@ -209,7 +306,14 @@ class TranslateServer:
                         if not text:
                             resp = {"ok": False, "error": "missing 'text'"}
                         else:
-                            resp = self.handle_text(text)
+                            to = req.get("to") or "en"
+                            self._pool()
+                            if getattr(self, "_auto_route", True):
+                                dst, ms, tier, route = self.translate_routed(text, to)
+                                resp = {"ok": True, "src": text, "dst": dst,
+                                        "ms": ms, "tier": tier, "route": route}
+                            else:
+                                resp = self.handle_text(text)
                             self._nreq += 1
                 except Exception as e:
                     resp = {"ok": False, "error": f"{type(e).__name__}: {e}"}

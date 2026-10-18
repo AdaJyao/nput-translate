@@ -50,6 +50,10 @@ DEFAULTS = {
     "max_new_tokens": 96,
     "autostart": False,              # 开机自启
     "background_service": True,      # 后台服务：关界面后服务继续常驻
+    # 按文本语言自动挑模型（缺直达时可用英文中转）
+    "auto_route": True,
+    # 同时驻留的模型数上限（超出按 LRU 淘汰，避免占满 NPU 内存）
+    "auto_max_models": 2,
     "minimize_to_tray": True,        # 关闭窗口时最小化到托盘
     "autostart_service": True,       # 打开界面时若服务没起，自动拉起
     "log_level": "INFO",
@@ -150,13 +154,17 @@ def service_probe(host=None, port=None, timeout=1.5):
         return None
 
 
-def translate(text, host=None, port=None, timeout=30.0):
-    """调服务翻译，返回 dict。服务不在时抛异常。"""
+def translate(text, to="en", host=None, port=None, timeout=180):
+    """调服务翻译，返回 dict。服务不在时抛异常。
+
+    to: 目标语言（en / zh-CN / de / fr / ru …）；开启自动路由时，
+        服务会按原文语言自动挑选模型，必要时经英文中转（耗时可能翻倍，故默认 180s）。
+    """
     import client as _c
     cfg = load_config()
     host = host or cfg.get("host", "127.0.0.1")
     port = int(port or cfg.get("port", 8715))
-    return _c.ask_json({"text": text}, host, port, timeout)
+    return _c.ask_json({"text": text, "to": to or "en"}, host, port, timeout)
 
 
 def openvino_devices():
@@ -361,4 +369,6 @@ def wait_service_ready(timeout=120, on_tick=None):
             on_tick()
         time.sleep(0.5)
     return False
+
+
 
