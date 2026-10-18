@@ -121,6 +121,7 @@ if (-not $OnlyGui) {
         '--exclude-module', 'torchvision',
         '--exclude-module', 'torchaudio',
         '--exclude-module', 'onnx',
+        '--exclude-module', 'onnxruntime',
         '--exclude-module', 'scipy',
         '--exclude-module', 'pandas',
         '--exclude-module', 'matplotlib',

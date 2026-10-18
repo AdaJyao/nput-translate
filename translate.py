@@ -273,12 +273,63 @@ def _pick_tier(compiled, text, tokenizer):
     return best or max(compiled, key=lambda k: compiled[k][0].inputs[0].shape[1])
 
 
+def _gen_constraints(cfg, model_dir=None):
+    """读取生成约束（部分模型在 generation_config.json 里禁用某些 token）。
+
+    典型例子：opus-mt-mul-en 的 generation_config 里 bad_words_ids=[[pad]]，
+    不禁用的话贪心解码第一步就会选 pad，整句输出为空。
+    返回 (禁止 token 集合, 强制 eos token)。
+    """
+    bad = set()
+    forced_eos = None
+    # generation_config.json 优先（HF 在 4.x 起把生成参数挪到这里）
+    try:
+        p = os.path.join(model_dir or MODEL_DIR, "generation_config.json")
+        if os.path.exists(p):
+            with open(p, "r", encoding="utf-8") as f:
+                gc = json.load(f)
+            for group in (gc.get("bad_words_ids") or []):
+                for t in (group or []):
+                    bad.add(int(t))
+            if gc.get("forced_eos_token_id") is not None:
+                forced_eos = int(gc["forced_eos_token_id"])
+    except Exception:
+        pass
+    for group in (cfg.get("bad_words_ids") or []):
+        for t in (group or []):
+            bad.add(int(t))
+    if cfg.get("forced_eos_token_id") is not None and forced_eos is None:
+        forced_eos = int(cfg["forced_eos_token_id"])
+    # pad 不该作为输出内容；但**不要**禁用 bos ——
+    # Marian 系模型常常 bos_token_id == eos_token_id（都是 0），
+    # 把 bos 禁掉会连带把 EOS 禁掉，解码就永远停不下来。
+    if cfg.get("pad_token_id") is not None:
+        bad.add(int(cfg["pad_token_id"]))
+    # EOS 永远不能禁用
+    for key in ("eos_token_id",):
+        if cfg.get(key) is not None:
+            bad.discard(int(cfg[key]))
+    return bad, forced_eos
+
+
+def _pick_next(logits_row, bad):
+    """在禁用 token 之外取 argmax。"""
+    if not bad:
+        return int(np.argmax(logits_row))
+    masked = np.array(logits_row, copy=True)
+    for t in bad:
+        if 0 <= t < masked.shape[0]:
+            masked[t] = -np.inf
+    return int(np.argmax(masked))
+
+
 def translate_static(enc_c, dec_c, tokenizer, text, max_new_tokens=MAX_NEW_TOKENS,
                      model_dir=None):
     cfg = _cfg(model_dir)
     pad_id = cfg.get("pad_token_id", 65000)
     dec_start = cfg.get("decoder_start_token_id", 65000)
     eos_id = cfg.get("eos_token_id", 0)
+    bad, _forced_eos = _gen_constraints(cfg, model_dir)
 
     enc = tokenizer(text, return_tensors="np", truncation=True, max_length=ENC_SEQ_MAX)
     ids = np.asarray(enc["input_ids"])[0]
@@ -301,7 +352,7 @@ def translate_static(enc_c, dec_c, tokenizer, text, max_new_tokens=MAX_NEW_TOKEN
             "input_ids": dec_in,
             "encoder_hidden_states": enc_hidden,
         })["logits"]
-        nxt = int(np.argmax(logits[0, min(n, dec_len) - 1]))
+        nxt = _pick_next(logits[0, min(n, dec_len) - 1], bad)
         if nxt == eos_id:
             break
         seq.append(nxt)
@@ -337,6 +388,7 @@ def translate_dynamic(enc_c, dec_c, tokenizer, text, max_new_tokens=MAX_NEW_TOKE
     cfg = _cfg(model_dir)
     dec_start = cfg.get("decoder_start_token_id", 65000)
     eos_id = cfg.get("eos_token_id", 0)
+    _dyn_bad, _ = _gen_constraints(cfg, model_dir)
 
     enc = tokenizer(text, return_tensors="np", truncation=True, max_length=512)
     src_ids = np.asarray(enc["input_ids"], dtype=np.int64)
@@ -353,7 +405,7 @@ def translate_dynamic(enc_c, dec_c, tokenizer, text, max_new_tokens=MAX_NEW_TOKE
             "input_ids": dec_in,
             "encoder_hidden_states": enc_hidden,
         })["logits"]
-        nxt = int(np.argmax(logits[0, -1]))
+        nxt = _pick_next(logits[0, -1], _dyn_bad)
         if nxt == eos_id:
             break
         seq.append(nxt)
@@ -388,4 +440,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 

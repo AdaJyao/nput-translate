@@ -127,15 +127,23 @@ def detect_lang(text):
 
 # ---------------------------------------------------------------- 模型路由
 def build_index(model_metas):
-    """model_metas: [{'path':..., 'src':..., 'dst':...}] -> {(src,dst): path}"""
+    """model_metas: [{'path':..., 'src':..., 'dst':...}] -> {(src,dst): path}
+
+    src 为 '*' 表示「任意语言 → dst」（多语种模型，如 opus-mt-mul-en）。
+    """
     idx = {}
     for m in model_metas:
-        src = norm_code(m.get("src"))
+        raw_src = (m.get("src") or "").strip()
+        src = "*" if raw_src == "*" else norm_code(raw_src)
         dst = norm_code(m.get("dst"))
         if not src or not dst:
             continue
-        # 同一对语言留第一个
-        idx.setdefault((src, dst), m["path"])
+        # 同一对语言留第一个；但精确语言对优先于通配
+        key = (src, dst)
+        if key not in idx:
+            idx[key] = m["path"]
+        elif src == "*":
+            pass
     return idx
 
 
@@ -153,18 +161,22 @@ def plan(index, text, to, allow_chain=True):
     if src == dst:
         return [], f"源语言与目标语言相同（{src}）"
 
-    # 1) 直达
+    # 1) 精确直达
     if (src, dst) in index:
         return [index[(src, dst)]], f"{src}→{dst}"
 
-    # 2) 经英文中转
+    # 2) 多语种模型直达（任意语言 → dst）
+    if ("*", dst) in index:
+        return [index[("*", dst)]], f"*→{dst}（多语种）"
+
+    # 3) 经英文中转
     if allow_chain and dst != "en" and src != "en":
-        a = index.get((src, "en"))
-        b = index.get(("en", dst))
+        a = index.get((src, "en")) or index.get(("*", "en"))
+        b = index.get(("en", dst)) or index.get(("*", dst))
         if a and b:
             return [a, b], f"{src}→en→{dst}（中转）"
 
-    # 3) 再从已装模型里找「任意 → dst」的直接模型（源语言识别可能不准）
+    # 4) 再从已装模型里找「任意 → dst」的直接模型（源语言识别可能不准）
     for (s, d), p in index.items():
         if d == dst:
             return [p], f"{s}→{dst}（按已装模型）"
