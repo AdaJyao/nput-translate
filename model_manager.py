@@ -59,34 +59,26 @@ def _entry(name, src, dst, precision="FP16", desc="", size=200, suffix="", fname
 
 
 MANIFEST = [
-    # 中 → 英（FP16 / FP32 两种精度）
-    # 这两个沿用早期已上传的附件名（opus-mt-zh-en-ov-*.zip）
+    # ---------- 中 <-> 英（Marian 77M，NPU，0.2-0.4 s） ----------
     _entry("opus-mt-zh-en", "zh", "en", "FP16",
-           "推荐：体积减半，NPU 原生按 FP16 计算，译文与 FP32 一致", 197,
+           "中译英：推荐，NPU 上约 0.3 秒", 197,
            fname="opus-mt-zh-en-ov-fp16.zip"),
     _entry("opus-mt-zh-en", "zh", "en", "FP32",
-           "最高精度：不做任何数值压缩，体积最大", 395, suffix="-fp32",
+           "中译英：不做数值压缩，体积最大", 395, suffix="-fp32",
            fname="opus-mt-zh-en-ov-fp32.zip"),
-    # 英 → 中
-    _entry("opus-mt-en-zh", "en", "zh", "FP16", "英译中", 197),
-    # 德 → 中（直达）
-    _entry("opus-mt-de-zh", "de", "zh", "FP16", "德译中", 197),
-    # 日 → 英
-    _entry("opus-mt-ja-en", "ja", "en", "FP16", "日译英", 189),
-    # 英 ↔ 德
-    _entry("opus-mt-en-de", "en", "de", "FP16", "英译德", 184),
-    _entry("opus-mt-de-en", "de", "en", "FP16", "德译英", 183),
-    # 英 → 法 / 英 → 俄
-    _entry("opus-mt-en-fr", "en", "fr", "FP16", "英译法", 187),
-    _entry("opus-mt-en-ru", "en", "ru", "FP16", "英译俄", 193),
-    # 多语种：任意语言 → 英（src='*' 为通配）
-    _entry("opus-mt-mul-en", "*", "en", "FP16",
-           "多语种→英：一个模型覆盖中/日/韩/德/法/俄等；质量不如专用双语模型", 197),
-    # 多语种互译：任意 ↔ 任意（100 语言），可直接输出中文
-    # 注意：该模型在 NPU 上输出会错位一位，因此固定在 CPU 上跑（约 1 秒/句）
-    _entry("m2m100-418M", "*", "*", "FP16",
-           "多语种互译（100 语言）：可直出中文；在 CPU 上运行，约 1 秒/句", 1083,
-           arch="m2m100", device="CPU"),
+    _entry("opus-mt-en-zh", "en", "zh", "FP16",
+           "英译中：NPU 上约 0.2 秒", 197),
+    # ---------- 中 <-> 日 ----------
+    # 日->中：社区 Marian 模型（Helsinki 没有 ja-zh），
+    # 由 ruozhi521/shiyin-mt-ja-zh-onnx 的 ONNX 转成 OpenVINO IR
+    _entry("opus-mt-ja-zh", "ja", "zh", "FP16",
+           "日译中：社区 Marian 模型，NPU 上约 0.2 秒", 197),
+    # 中->日：Helsinki 的 tc-big-zh-ja 在 HF 转换后输出乱码（sepvoc 分离词表问题），
+    # 改用 mT5 指令模型（前缀 zh2ja:），NPU 上约 0.35 秒
+    _entry("mt5-zh-ja-en", "zh", "ja", "FP16",
+           "中译日：mT5 指令模型（zh2ja:），NPU 上约 0.35 秒", 698,
+           arch="t5", prefix_template="{src}2{dst}: ",
+           tiers=[[64, 64], [128, 128]]),
 ]
 
 # 当前清单里出现过的模型（用于界面「模型」下拉）
@@ -429,7 +421,7 @@ def download_zip_model(entry, on_line=None, on_progress=None, should_stop=None):
              "label": entry["label"],
              "precision": entry.get("precision", ""),
              "source": entry.get("url", "")}
-    for _k in ("arch", "device"):
+    for _k in ("arch", "device", "prefix_template", "tiers"):
         if entry.get(_k):
             _meta[_k] = entry[_k]
     write_meta(target, _meta)
@@ -470,6 +462,8 @@ def delete_model(model_path):
         return True, "已删除"
     except Exception as e:
         return False, f"删除失败: {e}"
+
+
 
 
 

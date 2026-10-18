@@ -124,7 +124,41 @@ class TranslateServer:
             cfg = _cfg()
             self._max_pool = max(1, int(cfg.get("auto_max_models", 2) or 2))
             self._auto_route = bool(cfg.get("auto_route", True))
+            # 主模型一直驻留在 NPU 上，必须计入池容量，否则会多占一份 NPU 内存
+            if getattr(self, "model_dir", None) and self.compiled:
+                self._models[self.model_dir] = (self.compiled, self.tok)
+                self._model_lru.append(self.model_dir)
         return self._models
+
+    def _evict_until_room(self, need_path):
+        """在加载新模型**之前**腾出位置。
+
+        坑：NPU 上同时驻留 3 个模型会直接报
+        ZE_RESULT_ERROR_UNINITIALIZED（driver is not initialized），
+        所以必须先淘汰再加载，不能加载完再淘汰。
+        """
+        import gc
+        pool = self._pool()
+        max_n = getattr(self, "_max_pool", 2)
+        while len(pool) >= max_n:
+            victim = None
+            for cand in list(self._model_lru):
+                if cand != need_path:
+                    victim = cand
+                    break
+            if victim is None:
+                break
+            try:
+                self._model_lru.remove(victim)
+            except ValueError:
+                pass
+            pool.pop(victim, None)
+            # 主模型是 self.compiled 持有的，只从 dict 里 pop 不会释放 NPU 内存
+            if victim == getattr(self, "model_dir", None):
+                self.compiled = None
+                self.tok = None
+            gc.collect()
+            print(f"[路由] 先淘汰模型 {os.path.basename(victim)} 腾出 NPU 内存", flush=True)
 
     def _scan_models(self):
         """扫描 models\\ 下所有可用模型，返回 [{path, src, dst}]。"""
@@ -157,6 +191,8 @@ class TranslateServer:
             self._model_lru.append(path)
             return pool[path]
 
+        self._evict_until_room(path)
+
         from translate import load_static_multi, _seq_tiers, _read_meta
         cfg = _cfg()
         base = (int(cfg.get("enc_seq", 64)), int(cfg.get("dec_seq", 64)))
@@ -164,21 +200,16 @@ class TranslateServer:
         # 模型可以自带设备偏好（例如 m2m100 在 NPU 上输出会错位，必须走 CPU）
         meta = _read_meta(path)
         dev = (meta.get("device") or self.device).upper()
-        print(f"[路由] 加载模型 {os.path.basename(path)} 到 {dev} ...", flush=True)
+        # 大模型可自带档位列表（NPU 同时驻留多个档位会爆内存）
+        if meta.get("tiers"):
+            tiers = [tuple(t) for t in meta["tiers"]]
+        print(f"[路由] 加载模型 {os.path.basename(path)} 到 {dev}（档位 {tiers}）...", flush=True)
         t0 = time.time()
         compiled, tok = load_static_multi(path, dev, tiers=tiers)
         print(f"[路由] 模型就绪，耗时 {time.time()-t0:.2f}s", flush=True)
         pool[path] = (compiled, tok)
         self._model_lru.append(path)
 
-        # 超出容量就淘汰最久未用的（保留当前主模型）
-        while len(self._model_lru) > getattr(self, "_max_pool", 2):
-            victim = self._model_lru.pop(0)
-            if victim == getattr(self, "model_dir", None):
-                self._model_lru.append(victim)
-                break
-            pool.pop(victim, None)
-            print(f"[路由] 淘汰模型 {os.path.basename(victim)}（超出上限）", flush=True)
         return pool[path]
 
     def translate_routed(self, text, to):
@@ -224,6 +255,10 @@ class TranslateServer:
 
     def handle_text(self, text):
         from translate import translate_static, _pick_tier
+        # 主模型可能已被路由淘汰以腾出 NPU 内存，这里按需重新加载
+        if not self.compiled or self.tok is None:
+            if getattr(self, "model_dir", None) and self.load_error is None:
+                self.compiled, self.tok = self._ensure_model(self.model_dir)
         self._ensure_ready()
         tier = _pick_tier(self.compiled, text, self.tok)
         enc_c, dec_c = self.compiled[tier]
@@ -389,5 +424,7 @@ if __name__ == "__main__":
     if not args.no_http:
         print(f"[服务] HTTP {srv.host}:{http_port}（kiss-translator）", flush=True)
     srv.serve_forever()
+
+
 
 

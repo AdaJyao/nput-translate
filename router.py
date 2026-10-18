@@ -180,11 +180,9 @@ def plan(index, text, to, allow_chain=True):
         if a and b:
             return [a, b], f"{src}→en→{dst}（中转）"
 
-    # 4) 再从已装模型里找「任意 → dst」的直接模型（源语言识别可能不准）
-    for (s, d), p in index.items():
-        if d == dst:
-            return [p], f"{s}→{dst}（按已装模型）"
-
+    # 注意：这里**不要**加「任意 → dst」的兜底。
+    # 那会把其他语言的原文喂给方向不匹配的模型（例如把英文喂给中→日模型），
+    # 输出看似成功实际是错的。宁可返回原文并说明缺模型。
     available = ", ".join(sorted(f"{s}->{d}" for s, d in index)) or "无"
     return [], f"没有 {src}→{dst} 的模型（已装: {available}）"
 

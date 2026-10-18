@@ -201,8 +201,9 @@ def _load_tokenizer(model_dir):
     _patch_spm_loader()
 
     # 0) 多语种模型：m2m100 / nllb 只有一个合并的 spm
-    if os.path.exists(os.path.join(model_dir, "sentencepiece.bpe.model")) or \
-       os.path.exists(os.path.join(model_dir, "tokenizer.json")):
+    if (os.path.exists(os.path.join(model_dir, "sentencepiece.bpe.model"))
+            or os.path.exists(os.path.join(model_dir, "spiece.model"))
+            or os.path.exists(os.path.join(model_dir, "tokenizer.json"))):
         try:
             import transformers
             cand = transformers.AutoTokenizer.from_pretrained(model_dir)
@@ -413,12 +414,30 @@ def translate_static(enc_c, dec_c, tokenizer, text, max_new_tokens=MAX_NEW_TOKEN
         if tokenizer.eos_token_id is not None:
             eos_id = tokenizer.eos_token_id
 
+    # 任务前缀（mT5-zh-ja-en 之类需要 "zh2ja: " 这样的指令前缀）
+    pfx = meta.get("prefix_template")
+    if pfx:
+        try:
+            text = pfx.format(src=(src_lang or "").lower(),
+                              dst=(tgt_lang or "").lower()) + text
+        except Exception:
+            text = str(pfx) + text
+
     enc = tokenizer(text, return_tensors="np", truncation=True, max_length=ENC_SEQ_MAX)
     ids = np.asarray(enc["input_ids"])[0]
     mask = np.asarray(enc["attention_mask"])[0]
 
-    enc_len = enc_c.inputs[0].shape[1]
-    dec_len = dec_c.inputs[1].shape[1]
+    # T5 系 decoder 只有 input_ids + encoder_hidden_states（没有 encoder_attention_mask），
+    # 所以形状和喂入都要按输入名取，不能写死下标。
+    def _shape_of(compiled, name, dim=1):
+        for i in compiled.inputs:
+            if i.get_any_name() == name:
+                return i.shape[dim]
+        return compiled.inputs[0].shape[dim]
+
+    enc_len = _shape_of(enc_c, "input_ids")
+    dec_len = _shape_of(dec_c, "input_ids")
+    dec_names = {i.get_any_name() for i in dec_c.inputs}
 
     t0 = time.time()
     src_ids, src_len = _pad_to(ids, enc_len, pad_id)
@@ -429,11 +448,10 @@ def translate_static(enc_c, dec_c, tokenizer, text, max_new_tokens=MAX_NEW_TOKEN
     out_ids = []
     for _ in range(max_new_tokens):
         dec_in, n = _pad_to(seq, dec_len, pad_id)
-        logits = dec_c({
-            "encoder_attention_mask": src_mask,
-            "input_ids": dec_in,
-            "encoder_hidden_states": enc_hidden,
-        })["logits"]
+        feed = {"input_ids": dec_in, "encoder_hidden_states": enc_hidden}
+        if "encoder_attention_mask" in dec_names:
+            feed["encoder_attention_mask"] = src_mask
+        logits = dec_c(feed)["logits"]
         if forced_first is not None and not out_ids:
             # 多语种模型：第一个输出固定为目标语言 token（等价 HF 的 forced_bos_token_id）
             nxt = int(forced_first)
@@ -526,6 +544,8 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
 
 
 

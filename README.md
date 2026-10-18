@@ -168,42 +168,44 @@ http://127.0.0.1:8716/translate?text=今天天气真好&to=en
 
 ### 可用模型（下载源）
 
-| 模型 | 语言方向 | 精度 | 体积 | 说明 |
-|---|---|---|---|---|
-| `opus-mt-zh-en` | 中 → 英 | FP16 / FP32 | 197 / 395 MB | 默认推荐 |
-| `opus-mt-en-zh` | 英 → 中 | FP16 | 197 MB | 英译中质量最好 |
-| `opus-mt-de-zh` | 德 → 中 | FP16 | 192 MB | 德译中直达 |
-| `opus-mt-ja-en` | 日 → 英 | FP16 | 189 MB | |
-| `opus-mt-en-de` / `opus-mt-de-en` | 英 ↔ 德 | FP16 | 184 / 183 MB | |
-| `opus-mt-en-fr` / `opus-mt-en-ru` | 英 → 法 / 俄 | FP16 | 187 / 193 MB | |
-| `opus-mt-mul-en` | 任意 → 英 | FP16 | 197 MB | 多语种→英 |
-| **`m2m100-418M`** | **任意 ↔ 任意（100 语言）** | FP16 | **1083 MB** | **可直出中文**，CPU 上约 1 秒/句 |
+本项目聚焦 **中↔英** 与 **中↔日** 四个方向：
 
-### 多语种模型 m2m100（覆盖日/法/俄→中）
+| 方向 | 模型 | 体积 | 设备 | 实测延迟 | 说明 |
+|---|---|---|---|---|---|
+| 中 → 英 | `opus-mt-zh-en` | 197 MB（FP16）/ 395 MB（FP32） | NPU | ~350 ms | 质量接近官方 beam=4 |
+| 英 → 中 | `opus-mt-en-zh` | 197 MB | NPU | ~100–250 ms | 术语一般，日常句准确 |
+| 中 → 日 | `mt5-zh-ja-en` | 698 MB | NPU | ~350 ms | mT5 指令模型，前缀 `zh2ja:` |
+| 日 → 中 | `opus-mt-ja-zh` | 197 MB | NPU | ~100–200 ms | 社区 Marian 模型 |
 
-Helsinki 没有 `ja-zh` / `fr-zh` / `ru-zh` 这类直达模型，要覆盖这些语言→中文，
-需要 `m2m100-418M`（或 NLLB-200）：一个模型支持 100 语言互译，可直接输出中文。
+#### 为什么中日要这样配
 
-装好后路由会自动选它：
+- **日→中**：Helsinki 没有 `ja-zh`，用社区 Marian 模型
+  （`ruozhi521/shiyin-mt-ja-zh-onnx`，ONNX 转 OpenVINO IR），质量不错。
+- **中→日**：Helsinki 的 `opus-mt-tc-big-zh-ja` 在 HF 转换后**输出乱码**
+  （`sepvoc` 分离词表模型的已知不兼容），改用 mT5 指令模型
+  （`K024/mt5-zh-ja-en-trimmed`，任务前缀 `zh2ja:`）。
+  该模型是 CC BY-NC-SA 4.0（非商用）。
+- 中英之间**可以**走英文中转（如 `en→ja` 缺模型时），但默认**关闭中转**，
+  避免把英文喂给中→日模型这类方向错配。
 
-| 原文 | 目标 | 选中模型 | 结果 |
+#### 实测四向（服务端到端）
+
+| 原文 | 方向 | 译文 | 延迟 |
 |---|---|---|---|
-| The weather is really nice today. | 中文 | `opus-mt-en-zh`（专用，优先） | 今天天气不错 |
-| 今日はいい天気ですね。 | 中文 | `m2m100-418M` | 今天天气好吧。 |
-| Сегодня отличная погода. | 中文 | `m2m100-418M` | 今天天气很好。 |
-| Das Wetter ist heute wirklich schön. | 中文 | `opus-mt-de-zh` 或 `m2m100` | 今天天气真的很美好。 |
+| 今天天气真好，我们一起去公园散步吧。 | 中→英 | It's a nice day. Let's go for a walk in the park. | 352 ms |
+| The weather is really nice today. | 英→中 | 今天天气不错 | 85 ms |
+| 今天天气真好，我们一起去公园散步吧。 | 中→日 | 天気がよいので 一緒に公園を散歩しましょう | 348 ms |
+| 会议改到下午三点，请准时参加。 | 中→日 | 会議は午後3時に変更され、準時参加をお勧め。 | 370 ms |
+| 今日はいい天気ですね。 | 日→中 | 今天天氣很好。 | 104 ms |
+| 会議は午後3時に変更になりましたので、時間通りにご参加ください。 | 日→中 | 因为会议在下午3点改变,请按时参加。 | 197 ms |
 
-**为什么它跑在 CPU 上**：同一个 IR 在 CPU 上输出正确，在 NPU 上输出会整体
-偏移一位（`bad_words` 之外还有这个坑），因此该模型在 `meta.json` 里固定
-`"device": "CPU"`，约 1 秒/句；专用双语模型仍然跑 NPU（100–300 ms）。
+#### NPU 内存与模型池
 
-> NLLB-200-distilled-600M 也试过：encoder/decoder 能编译到 NPU，但 decoder
-> 推理报 NPU 驱动错误（模型过大），CPU 上单步 140 ms，比 m2m100 慢，未采用。
-
-### 中转开关
-
-`config.json` 的 `allow_chain` 默认 **false**（不中转）。开启后才允许
-`ja→en→zh` 这种两段路径；默认优先直达或专用/多语种模型。
+NPU 上同时驻留 3 个模型会直接报 `ZE_RESULT_ERROR_UNINITIALIZED`，
+所以服务用「模型池 + 先淘汰再加载」：同时驻留上限默认 2 个
+（`config.json` 的 `auto_max_models`），主模型也计入其中；
+大模型（如 mT5）通过 `meta.json` 的 `tiers` 限制只编译 2 个档位，
+进一步降低 NPU 占用。
 
 ### 精度可选
 
