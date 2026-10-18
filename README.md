@@ -168,22 +168,42 @@ http://127.0.0.1:8716/translate?text=今天天气真好&to=en
 
 ### 可用模型（下载源）
 
-显示名一律用**原始精简模型名**，与 HuggingFace 上的名字一致：
+| 模型 | 语言方向 | 精度 | 体积 | 说明 |
+|---|---|---|---|---|
+| `opus-mt-zh-en` | 中 → 英 | FP16 / FP32 | 197 / 395 MB | 默认推荐 |
+| `opus-mt-en-zh` | 英 → 中 | FP16 | 197 MB | 英译中质量最好 |
+| `opus-mt-de-zh` | 德 → 中 | FP16 | 192 MB | 德译中直达 |
+| `opus-mt-ja-en` | 日 → 英 | FP16 | 189 MB | |
+| `opus-mt-en-de` / `opus-mt-de-en` | 英 ↔ 德 | FP16 | 184 / 183 MB | |
+| `opus-mt-en-fr` / `opus-mt-en-ru` | 英 → 法 / 俄 | FP16 | 187 / 193 MB | |
+| `opus-mt-mul-en` | 任意 → 英 | FP16 | 197 MB | 多语种→英 |
+| **`m2m100-418M`** | **任意 ↔ 任意（100 语言）** | FP16 | **1083 MB** | **可直出中文**，CPU 上约 1 秒/句 |
 
-| 模型 | 语言方向 | 精度 | 体积 |
+### 多语种模型 m2m100（覆盖日/法/俄→中）
+
+Helsinki 没有 `ja-zh` / `fr-zh` / `ru-zh` 这类直达模型，要覆盖这些语言→中文，
+需要 `m2m100-418M`（或 NLLB-200）：一个模型支持 100 语言互译，可直接输出中文。
+
+装好后路由会自动选它：
+
+| 原文 | 目标 | 选中模型 | 结果 |
 |---|---|---|---|
-| `opus-mt-zh-en` | 中 → 英 | FP16 / FP32 | 197 / 395 MB |
-| `opus-mt-en-zh` | 英 → 中 | FP16 | 197 MB |
-| `opus-mt-ja-en` | 日 → 英 | FP16 | 189 MB |
-| `opus-mt-en-de` | 英 → 德 | FP16 | 184 MB |
-| `opus-mt-de-en` | 德 → 英 | FP16 | 183 MB |
-| `opus-mt-en-fr` | 英 → 法 | FP16 | 187 MB |
-| `opus-mt-en-ru` | 英 → 俄 | FP16 | 193 MB |
+| The weather is really nice today. | 中文 | `opus-mt-en-zh`（专用，优先） | 今天天气不错 |
+| 今日はいい天気ですね。 | 中文 | `m2m100-418M` | 今天天气好吧。 |
+| Сегодня отличная погода. | 中文 | `m2m100-418M` | 今天天气很好。 |
+| Das Wetter ist heute wirklich schön. | 中文 | `opus-mt-de-zh` 或 `m2m100` | 今天天气真的很美好。 |
 
-模型装到 `models\<模型名>`（FP32 版为 `models\<模型名>-fp32`），
-不同模型可同时存在、随时切换。语言方向由目录里的 `meta.json` 记录，服务启动时读取。
+**为什么它跑在 CPU 上**：同一个 IR 在 CPU 上输出正确，在 NPU 上输出会整体
+偏移一位（`bad_words` 之外还有这个坑），因此该模型在 `meta.json` 里固定
+`"device": "CPU"`，约 1 秒/句；专用双语模型仍然跑 NPU（100–300 ms）。
 
-> 只装了某一个模型也能直接用 —— 服务会自动在 `models\` 下找第一个可用模型。
+> NLLB-200-distilled-600M 也试过：encoder/decoder 能编译到 NPU，但 decoder
+> 推理报 NPU 驱动错误（模型过大），CPU 上单步 140 ms，比 m2m100 慢，未采用。
+
+### 中转开关
+
+`config.json` 的 `allow_chain` 默认 **false**（不中转）。开启后才允许
+`ja→en→zh` 这种两段路径；默认优先直达或专用/多语种模型。
 
 ### 精度可选
 

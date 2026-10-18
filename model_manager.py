@@ -35,7 +35,7 @@ MODELS_DIR = os.path.join(APP_DIR, "models")
 _RELEASE_BASE = "https://github.com/AdaJyao/nput-translate/releases/download/v1.2.0"
 
 
-def _entry(name, src, dst, precision="FP16", desc="", size=200, suffix="", fname=None):
+def _entry(name, src, dst, precision="FP16", desc="", size=200, suffix="", fname=None, **extra):
     """构造一条下载源记录。name 即精简原始模型名（同时用作安装目录名）。
 
     fname 用于兼容早期已发布的附件名（那时的 zip 带 -ov 后缀）。
@@ -43,7 +43,7 @@ def _entry(name, src, dst, precision="FP16", desc="", size=200, suffix="", fname
     dirname = name + suffix
     if fname is None:
         fname = name + suffix + "-fp16.zip"
-    return {
+    entry = {
         "id": dirname,
         "dir": dirname,
         "label": name,
@@ -54,6 +54,8 @@ def _entry(name, src, dst, precision="FP16", desc="", size=200, suffix="", fname
         "url": _RELEASE_BASE + "/" + fname,
         "size_mb": size,
     }
+    entry.update(extra)   # arch / device 等模型专属字段
+    return entry
 
 
 MANIFEST = [
@@ -67,6 +69,8 @@ MANIFEST = [
            fname="opus-mt-zh-en-ov-fp32.zip"),
     # 英 → 中
     _entry("opus-mt-en-zh", "en", "zh", "FP16", "英译中", 197),
+    # 德 → 中（直达）
+    _entry("opus-mt-de-zh", "de", "zh", "FP16", "德译中", 197),
     # 日 → 英
     _entry("opus-mt-ja-en", "ja", "en", "FP16", "日译英", 189),
     # 英 ↔ 德
@@ -78,6 +82,11 @@ MANIFEST = [
     # 多语种：任意语言 → 英（src='*' 为通配）
     _entry("opus-mt-mul-en", "*", "en", "FP16",
            "多语种→英：一个模型覆盖中/日/韩/德/法/俄等；质量不如专用双语模型", 197),
+    # 多语种互译：任意 ↔ 任意（100 语言），可直接输出中文
+    # 注意：该模型在 NPU 上输出会错位一位，因此固定在 CPU 上跑（约 1 秒/句）
+    _entry("m2m100-418M", "*", "*", "FP16",
+           "多语种互译（100 语言）：可直出中文；在 CPU 上运行，约 1 秒/句", 1083,
+           arch="m2m100", device="CPU"),
 ]
 
 # 当前清单里出现过的模型（用于界面「模型」下拉）
@@ -416,10 +425,14 @@ def download_zip_model(entry, on_line=None, on_progress=None, should_stop=None):
         return False, "下载包内容不完整（缺少 openvino_*_model.xml/.bin）"
 
     # 按清单写入 meta.json：显示名统一用原始模型名，不依赖压缩包里的旧标签
-    write_meta(target, {"src": entry["src"], "dst": entry["dst"],
-                        "label": entry["label"],
-                        "precision": entry.get("precision", ""),
-                        "source": entry.get("url", "")})
+    _meta = {"src": entry["src"], "dst": entry["dst"],
+             "label": entry["label"],
+             "precision": entry.get("precision", ""),
+             "source": entry.get("url", "")}
+    for _k in ("arch", "device"):
+        if entry.get(_k):
+            _meta[_k] = entry[_k]
+    write_meta(target, _meta)
     if on_line:
         on_line("安装完成: " + target)
     return True, "完成：%s" % entry["label"]
@@ -457,5 +470,7 @@ def delete_model(model_path):
         return True, "已删除"
     except Exception as e:
         return False, f"删除失败: {e}"
+
+
 
 

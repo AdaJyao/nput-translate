@@ -169,6 +169,10 @@ def plan(index, text, to, allow_chain=True):
     if ("*", dst) in index:
         return [index[("*", dst)]], f"*→{dst}（多语种）"
 
+    # 2.5) 全语种互译模型（任意 → 任意，如 m2m100 / NLLB）
+    if ("*", "*") in index:
+        return [index[("*", "*")]], f"{src}→{dst}（多语种互译）"
+
     # 3) 经英文中转
     if allow_chain and dst != "en" and src != "en":
         a = index.get((src, "en")) or index.get(("*", "en"))

@@ -165,13 +165,21 @@ def _patch_spm_loader():
         print(f"  [tokenizer] SPM 加载器补丁失败: {e!r}", flush=True)
 
 
-def _load_tokenizer(model_dir):
-    """加载 Marian 分词器。
+def _read_meta(model_dir):
+    """读模型目录里的 meta.json（多语种模型用它标记 arch / 语言代码映射）。"""
+    try:
+        with open(os.path.join(model_dir, "meta.json"), "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
 
-    坑（PyInstaller 打包后）：transformers 的 PreTrainedTokenizerBase.from_pretrained
-    在构造 tokenizer 抛异常时会 `except import_protobuf_decode_error(): return False`，
-    把真实异常吞掉，最终拿到一个 bool。因此这里**直接构造** MarianTokenizer，
-    让真实异常暴露；再退回 from_pretrained 作为兜底。
+
+def _load_tokenizer(model_dir):
+    """加载分词器。
+
+    - Marian 系（有 vocab.json + source.spm）：直接构造 MarianTokenizer
+      （坑：PyInstaller 打包后 from_pretrained 会把真实异常吞成 False）
+    - 多语种模型（m2m100 / NLLB，只有一个 sentencepiece.bpe.model）：用 AutoTokenizer
     """
     import traceback
     diag = []
@@ -192,13 +200,25 @@ def _load_tokenizer(model_dir):
 
     _patch_spm_loader()
 
+    # 0) 多语种模型：m2m100 / nllb 只有一个合并的 spm
+    if os.path.exists(os.path.join(model_dir, "sentencepiece.bpe.model")) or \
+       os.path.exists(os.path.join(model_dir, "tokenizer.json")):
+        try:
+            import transformers
+            cand = transformers.AutoTokenizer.from_pretrained(model_dir)
+            if _ok(cand):
+                print(f"  [tokenizer] 多语种 AutoTokenizer -> {type(cand).__name__}", flush=True)
+                return cand
+        except Exception:
+            diag.append("AutoTokenizer(多语种) 失败:\n" + traceback.format_exc()[-600:])
+
     # 1) 直接构造（推荐路径，绕过 from_pretrained 的异常吞噬）
     try:
         from transformers.models.marian.tokenization_marian import MarianTokenizer
         cand = MarianTokenizer(
             vocab=os.path.join(model_dir, "vocab.json"),
             source_spm=os.path.join(model_dir, "source.spm"),
-            target_spm=os.path.join(model_dir, "target.spm"),
+            target_spm=os.path.join(model_dir, "target_spm"),
         )
         if _ok(cand):
             print(f"  [tokenizer] 直接构造成功 -> {type(cand).__name__}", flush=True)
@@ -323,13 +343,75 @@ def _pick_next(logits_row, bad):
     return int(np.argmax(masked))
 
 
+# ---------------------------------------------------------------- 多语种模型
+# m2m100 用 ISO-639-1（两位）；NLLB 用 FLORES-200 代码
+_M2M_CODES = {
+    "zh": "zh", "en": "en", "ja": "ja", "ko": "ko", "ru": "ru",
+    "de": "de", "fr": "fr", "es": "es", "it": "it", "pt": "pt", "nl": "nl",
+}
+_NLLB_CODES = {
+    "zh": "zho_Hans", "en": "eng_Latn", "ja": "jpn_Jpan", "ko": "kor_Hang",
+    "ru": "rus_Cyrl", "de": "deu_Latn", "fr": "fra_Latn", "es": "spa_Latn",
+    "it": "ita_Latn", "pt": "por_Latn", "nl": "nld_Latn",
+}
+
+
+def _lang_pair(arch, src_lang, tgt_lang, meta):
+    """把内部两位语言代码转成该模型要求的写法。"""
+    table = _NLLB_CODES if arch == "nllb" else _M2M_CODES
+    src = table.get((src_lang or "").lower(), src_lang or "")
+    tgt = table.get((tgt_lang or "").lower(), tgt_lang or "")
+    # 模型可自带覆盖表（meta.json 的 lang_map）
+    override = meta.get("lang_map") or {}
+    if src_lang and src_lang.lower() in override:
+        src = override[src_lang.lower()]
+    if tgt_lang and tgt_lang.lower() in override:
+        tgt = override[tgt_lang.lower()]
+    return src, tgt
+
+
+def _lang_token_id(arch, tokenizer, code):
+    """取目标语言 token 的 id（作为解码起点）。"""
+    if not code:
+        return None
+    try:
+        if arch == "m2m100" and hasattr(tokenizer, "get_lang_id"):
+            return int(tokenizer.get_lang_id(code))
+        if arch == "nllb" and hasattr(tokenizer, "convert_tokens_to_ids"):
+            tid = tokenizer.convert_tokens_to_ids(code)
+            if tid is not None and tid >= 0:
+                return int(tid)
+        if hasattr(tokenizer, "get_lang_id"):
+            return int(tokenizer.get_lang_id(code))
+    except Exception as e:
+        print(f"  [多语种] 取语言 token 失败 {code}: {e}", flush=True)
+    return None
+
+
 def translate_static(enc_c, dec_c, tokenizer, text, max_new_tokens=MAX_NEW_TOKENS,
-                     model_dir=None):
+                     model_dir=None, src_lang=None, tgt_lang=None):
     cfg = _cfg(model_dir)
     pad_id = cfg.get("pad_token_id", 65000)
     dec_start = cfg.get("decoder_start_token_id", 65000)
     eos_id = cfg.get("eos_token_id", 0)
     bad, _forced_eos = _gen_constraints(cfg, model_dir)
+
+    # 多语种模型（m2m100 / NLLB）：需要先设源语言，并把目标语言 token 作为解码起点
+    forced_first = None
+    meta = _read_meta(model_dir)
+    arch = (meta.get("arch") or "").lower()
+    if arch in ("m2m100", "nllb") and tokenizer is not None:
+        src_code, tgt_code = _lang_pair(arch, src_lang, tgt_lang, meta)
+        try:
+            if src_code and hasattr(tokenizer, "src_lang"):
+                tokenizer.src_lang = src_code
+        except Exception:
+            pass
+        forced_first = _lang_token_id(arch, tokenizer, tgt_code)
+        if tokenizer.pad_token_id is not None:
+            pad_id = tokenizer.pad_token_id
+        if tokenizer.eos_token_id is not None:
+            eos_id = tokenizer.eos_token_id
 
     enc = tokenizer(text, return_tensors="np", truncation=True, max_length=ENC_SEQ_MAX)
     ids = np.asarray(enc["input_ids"])[0]
@@ -352,7 +434,11 @@ def translate_static(enc_c, dec_c, tokenizer, text, max_new_tokens=MAX_NEW_TOKEN
             "input_ids": dec_in,
             "encoder_hidden_states": enc_hidden,
         })["logits"]
-        nxt = _pick_next(logits[0, min(n, dec_len) - 1], bad)
+        if forced_first is not None and not out_ids:
+            # 多语种模型：第一个输出固定为目标语言 token（等价 HF 的 forced_bos_token_id）
+            nxt = int(forced_first)
+        else:
+            nxt = _pick_next(logits[0, min(n, dec_len) - 1], bad)
         if nxt == eos_id:
             break
         seq.append(nxt)
@@ -440,5 +526,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 

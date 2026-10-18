@@ -157,13 +157,16 @@ class TranslateServer:
             self._model_lru.append(path)
             return pool[path]
 
-        from translate import load_static_multi, _seq_tiers
+        from translate import load_static_multi, _seq_tiers, _read_meta
         cfg = _cfg()
         base = (int(cfg.get("enc_seq", 64)), int(cfg.get("dec_seq", 64)))
         tiers = [base] + [t for t in _seq_tiers() if t != base]
-        print(f"[路由] 加载模型 {os.path.basename(path)} ...", flush=True)
+        # 模型可以自带设备偏好（例如 m2m100 在 NPU 上输出会错位，必须走 CPU）
+        meta = _read_meta(path)
+        dev = (meta.get("device") or self.device).upper()
+        print(f"[路由] 加载模型 {os.path.basename(path)} 到 {dev} ...", flush=True)
         t0 = time.time()
-        compiled, tok = load_static_multi(path, self.device, tiers=tiers)
+        compiled, tok = load_static_multi(path, dev, tiers=tiers)
         print(f"[路由] 模型就绪，耗时 {time.time()-t0:.2f}s", flush=True)
         pool[path] = (compiled, tok)
         self._model_lru.append(path)
@@ -191,24 +194,30 @@ class TranslateServer:
 
         metas = self._scan_models()
         index = router.build_index(metas)
-        paths, desc = router.plan(index, text, to)
+        allow_chain = bool(_cfg().get("allow_chain", False))
+        paths, desc = router.plan(index, text, to, allow_chain=allow_chain)
         if not paths:
             raise RuntimeError(desc)
 
         out = text
         total = 0.0
         tier_last = None
+        src_lang = router.detect_lang(text)
+        tgt_lang = router.norm_code(to)
         for p in paths:
             compiled, tok = self._ensure_model(p)
             tier = _pick_tier(compiled, out, tok)
             enc_c, dec_c = compiled[tier]
             t0 = time.time()
             with self._lock:
-                out, _ = translate_static(enc_c, dec_c, tok, out, model_dir=p)
+                # 多语种模型（m2m100/NLLB）需要显式传源/目标语言；Marian 会忽略这两个参数
+                out, _ = translate_static(enc_c, dec_c, tok, out, model_dir=p,
+                                          src_lang=src_lang, tgt_lang=tgt_lang)
             total += (time.time() - t0) * 1000
             tier_last = tier
             if len(paths) > 1:
                 print(f"[路由] {desc} 中途: {os.path.basename(p)} -> {out}", flush=True)
+                src_lang = "en"   # 中转后第二段源语言是英文
 
         self._nreq += 1
         return out, round(total, 1), tier_last, desc
@@ -380,4 +389,5 @@ if __name__ == "__main__":
     if not args.no_http:
         print(f"[服务] HTTP {srv.host}:{http_port}（kiss-translator）", flush=True)
     srv.serve_forever()
+
 

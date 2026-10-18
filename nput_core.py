@@ -54,6 +54,8 @@ DEFAULTS = {
     "auto_route": True,
     # 同时驻留的模型数上限（超出按 LRU 淘汰，避免占满 NPU 内存）
     "auto_max_models": 2,
+    # 是否允许「经英文中转」（默认关闭：优先用直达/多语种模型，质量更好）
+    "allow_chain": False,
     "minimize_to_tray": True,        # 关闭窗口时最小化到托盘
     "autostart_service": True,       # 打开界面时若服务没起，自动拉起
     "log_level": "INFO",
@@ -369,6 +371,7 @@ def wait_service_ready(timeout=120, on_tick=None):
             on_tick()
         time.sleep(0.5)
     return False
+
 
 
 
